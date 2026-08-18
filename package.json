@@ -1,0 +1,52 @@
+{
+  "name": "universal-erp-backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "nest build",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:prod": "node dist/src/main.js",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
+    "test": "tsx --test --test-concurrency=1 test/unit/security.spec.ts",
+    "test:db": "tsx test/prepare-test-db.ts",
+    "test:e2e": "npm run test:db && npm run build && tsx --test --test-concurrency=1 test/e2e/integration.spec.ts",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:studio": "prisma studio",
+    "seed": "tsx prisma/seed/index.ts"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/config": "^4.0.0",
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/jwt": "^11.0.0",
+    "@nestjs/passport": "^11.0.5",
+    "@nestjs/platform-express": "^11.0.1",
+    "@prisma/client": "^6.14.0",
+    "bcrypt": "^6.0.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.2",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.34.0",
+    "@nestjs/cli": "^11.0.10",
+    "@nestjs/schematics": "^11.0.7",
+    "@nestjs/testing": "^11.0.1",
+    "@types/bcrypt": "^6.0.0",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.3.0",
+    "@types/passport-jwt": "^4.0.1",
+    "@typescript-eslint/eslint-plugin": "^8.67.0",
+    "@typescript-eslint/parser": "^8.67.0",
+    "eslint": "^9.34.0",
+    "prisma": "^6.14.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

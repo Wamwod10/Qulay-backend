@@ -1,0 +1,46 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ROLE_PERMISSION_MAP = exports.DEFAULT_PERMISSIONS = void 0;
+exports.DEFAULT_PERMISSIONS = [
+    "dashboard.view",
+    "sales.view",
+    "sales.create",
+    "sales.cancel",
+    "sales.return",
+    "manufacturing.view",
+    "manufacturing.order.view",
+    "manufacturing.order.create",
+    "manufacturing.manage",
+    "warehouse.view",
+    "warehouse.manage",
+    "purchases.view",
+    "purchases.manage",
+    "products.view",
+    "products.create",
+    "products.update",
+    "products.manage",
+    "customers.view",
+    "customers.manage",
+    "agents.view",
+    "agents.manage",
+    "suppliers.view",
+    "suppliers.manage",
+    "finance.view",
+    "finance.manage",
+    "employees.view",
+    "employees.manage",
+    "reports.view",
+    "settings.view",
+    "settings.manage",
+];
+exports.ROLE_PERMISSION_MAP = {
+    SUPER_ADMIN: ["*"],
+    OWNER: exports.DEFAULT_PERMISSIONS,
+    ADMIN: exports.DEFAULT_PERMISSIONS,
+    MANAGER: exports.DEFAULT_PERMISSIONS.filter((permission) => permission !== "settings.manage"),
+    CASHIER: ["dashboard.view", "sales.view", "sales.create", "products.view", "customers.view"],
+    WAREHOUSE: ["dashboard.view", "warehouse.view", "warehouse.manage", "products.view", "purchases.view"],
+    SALES: ["dashboard.view", "sales.view", "sales.create", "customers.view", "agents.view", "products.view"],
+    EMPLOYEE: ["dashboard.view"],
+};
+//# sourceMappingURL=permissions.constants.js.map

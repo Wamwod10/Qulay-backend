@@ -1,0 +1,1 @@
+{"version":3,"file":"tenant-access.exception.js","sourceRoot":"","sources":["../../../../src/common/exceptions/tenant-access.exception.ts"],"names":[],"mappings":";;;AAAA,2CAAoD;AAEpD,MAAa,qBAAsB,SAAQ,2BAAkB;IAC3D,YAAY,OAAO,GAAG,0CAA0C;QAC9D,KAAK,CAAC,EAAE,IAAI,EAAE,kBAAkB,EAAE,OAAO,EAAE,CAAC,CAAC;IAC/C,CAAC;CACF;AAJD,sDAIC"}
