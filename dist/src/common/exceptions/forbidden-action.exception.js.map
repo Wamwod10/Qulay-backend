@@ -1,1 +1,0 @@
-{"version":3,"file":"forbidden-action.exception.js","sourceRoot":"","sources":["../../../../src/common/exceptions/forbidden-action.exception.ts"],"names":[],"mappings":";;;AAAA,2CAAoD;AAEpD,MAAa,wBAAyB,SAAQ,2BAAkB;IAC9D,YAAY,OAAO,GAAG,4BAA4B;QAChD,KAAK,CAAC,EAAE,IAAI,EAAE,kBAAkB,EAAE,OAAO,EAAE,CAAC,CAAC;IAC/C,CAAC;CACF;AAJD,4DAIC"}
