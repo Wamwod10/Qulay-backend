@@ -2,6 +2,7 @@ import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from "@
 import { Reflector } from "@nestjs/core";
 
 import { PERMISSIONS_KEY } from "../decorators/permissions.decorator";
+import { SUPER_ADMIN_ROLE } from "../constants/user-role.constants";
 
 @Injectable()
 export class PermissionsGuard implements CanActivate {
@@ -19,7 +20,7 @@ export class PermissionsGuard implements CanActivate {
 
     const user = context.switchToHttp().getRequest().user;
 
-    if (user?.role === "SUPER_ADMIN" || user?.permissions?.includes("*")) {
+    if (user?.role === SUPER_ADMIN_ROLE || user?.permissions?.includes("*")) {
       return true;
     }
 

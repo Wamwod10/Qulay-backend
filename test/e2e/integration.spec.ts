@@ -218,12 +218,62 @@ describe("health, auth and error boundaries", () => {
 });
 
 describe("super admin and module access", () => {
+  test("super admin login carries the canonical role through JWT and me, without a company", async () => {
+    const superAdmin = await createFixture("superadmin-auth", "SUPER_ADMIN");
+    const successfulLogin = await api("/auth/login", {
+      method: "POST",
+      body: { identifier: superAdmin.user.email, password },
+      headers: { "x-forwarded-for": `10.22.0.${++requestCounter}` },
+    });
+
+    assert.ok([200, 201].includes(successfulLogin.status), JSON.stringify(successfulLogin.body));
+    assert.equal(successfulLogin.body.user.id, superAdmin.user.id);
+    assert.equal(successfulLogin.body.user.email, superAdmin.user.email);
+    assert.equal(successfulLogin.body.user.role, "SUPER_ADMIN");
+    assert.equal(successfulLogin.body.user.status, "ACTIVE");
+    assert.equal(successfulLogin.body.account.id, "platform");
+    assert.equal(JSON.stringify(successfulLogin.body).includes("passwordHash"), false);
+
+    const token = successfulLogin.body.accessToken as string;
+    const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+    assert.equal(payload.sub, superAdmin.user.id);
+    assert.equal(payload.role, "SUPER_ADMIN");
+
+    const me = await api("/auth/me", { token });
+    assert.equal(me.status, 200, JSON.stringify(me.body));
+    assert.equal(me.body.user.role, "SUPER_ADMIN");
+    assert.equal(me.body.role, "SUPER_ADMIN");
+    assert.equal(JSON.stringify(me.body).includes("passwordHash"), false);
+
+    const dashboard = await api("/superadmin/dashboard", { token });
+    assert.equal(dashboard.status, 200, JSON.stringify(dashboard.body));
+
+    const wrongPassword = await api("/auth/login", {
+      method: "POST",
+      body: { identifier: superAdmin.user.email, password: "WrongPass9" },
+      headers: { "x-forwarded-for": `10.23.0.${++requestCounter}` },
+    });
+    assert.equal(wrongPassword.status, 401);
+    assert.equal(wrongPassword.body.code, "INVALID_CREDENTIALS");
+
+    await prisma.user.update({ where: { id: superAdmin.user.id }, data: { status: "BLOCKED" } });
+    const blockedLogin = await api("/auth/login", {
+      method: "POST",
+      body: { identifier: superAdmin.user.email, password },
+      headers: { "x-forwarded-for": `10.24.0.${++requestCounter}` },
+    });
+    assert.equal(blockedLogin.status, 401);
+    assert.equal(blockedLogin.body.code, "ACCOUNT_BLOCKED");
+  });
+
   test("super admin lists protected resources, blocks/unblocks users and records audit logs", async () => {
     const superAdmin = await createFixture("superadmin", "SUPER_ADMIN");
     const owner = await createFixture("managed-owner");
     const superToken = await login(superAdmin.user.email);
     const ownerToken = await login(owner.user.email, owner);
 
+    const forbiddenDashboard = await api("/superadmin/dashboard", { token: ownerToken, companyId: owner.company.id });
+    assert.equal(forbiddenDashboard.status, 403);
     const forbidden = await api("/superadmin/users", { token: ownerToken, companyId: owner.company.id });
     assert.equal(forbidden.status, 403);
     const users = await api("/superadmin/users", { token: superToken });

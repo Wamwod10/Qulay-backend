@@ -5,6 +5,8 @@ export function validateEnv(config: Record<string, unknown>) {
   const databaseUrl = String(config.DATABASE_URL || "").trim();
   const jwtSecret = String(config.JWT_SECRET || "").trim();
   const frontendUrl = String(config.FRONTEND_URL || "").trim();
+  const superAdminEmail = String(config.SUPER_ADMIN_EMAIL || "").trim().toLowerCase();
+  const superAdminPassword = String(config.SUPER_ADMIN_PASSWORD || "");
 
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required.");
@@ -18,6 +20,10 @@ export function validateEnv(config: Record<string, unknown>) {
     throw new Error("FRONTEND_URL is required in production.");
   }
 
+  if (production && (!superAdminEmail || !superAdminPassword)) {
+    throw new Error("SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD are required in production.");
+  }
+
   return {
     ...config,
     DATABASE_URL: databaseUrl,
@@ -25,5 +31,7 @@ export function validateEnv(config: Record<string, unknown>) {
     JWT_SECRET: jwtSecret,
     JWT_EXPIRES_IN: String(config.JWT_EXPIRES_IN || "7d"),
     FRONTEND_URL: frontendUrl || "http://localhost:5173",
+    SUPER_ADMIN_EMAIL: superAdminEmail,
+    SUPER_ADMIN_PASSWORD: superAdminPassword,
   };
 }

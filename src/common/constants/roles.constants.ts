@@ -1,5 +1,7 @@
+import { SUPER_ADMIN_ROLE } from "./user-role.constants";
+
 export const ROLES = [
-  "SUPER_ADMIN",
+  SUPER_ADMIN_ROLE,
   "OWNER",
   "ADMIN",
   "MANAGER",

@@ -4,6 +4,7 @@ import { PrismaClient } from "@prisma/client";
 import { PLATFORM_MODULES } from "../../src/common/constants/modules.constants";
 import { DEFAULT_PERMISSIONS } from "../../src/common/constants/permissions.constants";
 import { ROLES } from "../../src/common/constants/roles.constants";
+import { SUPER_ADMIN_ROLE } from "../../src/common/constants/user-role.constants";
 
 const prisma = new PrismaClient();
 
@@ -45,24 +46,46 @@ async function main() {
     });
   }
 
-  const email = process.env.SUPER_ADMIN_EMAIL;
-  const password = process.env.SUPER_ADMIN_PASSWORD;
+  const email = String(process.env.SUPER_ADMIN_EMAIL || "").trim().toLowerCase();
+  const password = String(process.env.SUPER_ADMIN_PASSWORD || "");
 
-  if (email && password) {
-    const passwordHash = await bcrypt.hash(password, 12);
+  if (!email || !password) {
+    throw new Error("SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD are required to seed the platform administrator.");
+  }
 
-    await prisma.user.upsert({
-      where: { email: email.trim().toLowerCase() },
-      update: {
-        passwordHash,
-        role: "SUPER_ADMIN",
-        status: "ACTIVE",
+  if (password.length < 8) {
+    throw new Error("SUPER_ADMIN_PASSWORD must contain at least 8 characters.");
+  }
+
+  const passwordHash = await bcrypt.hash(password, 12);
+  const existingSuperAdmin = await prisma.user.findFirst({
+    where: {
+      email: {
+        equals: email,
+        mode: "insensitive",
       },
-      create: {
-        fullName: "Super Admin",
-        email: email.trim().toLowerCase(),
+    },
+    select: { id: true },
+  });
+
+  if (existingSuperAdmin) {
+    await prisma.user.update({
+      where: { id: existingSuperAdmin.id },
+      data: {
+        email,
         passwordHash,
-        role: "SUPER_ADMIN",
+        role: SUPER_ADMIN_ROLE,
+        status: "ACTIVE",
+        deletedAt: null,
+      },
+    });
+  } else {
+    await prisma.user.create({
+      data: {
+        fullName: "Super Admin",
+        email,
+        passwordHash,
+        role: SUPER_ADMIN_ROLE,
         status: "ACTIVE",
       },
     });

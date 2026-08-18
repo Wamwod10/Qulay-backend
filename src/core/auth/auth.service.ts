@@ -5,6 +5,7 @@ import * as bcrypt from "bcrypt";
 
 import { PLATFORM_MODULES } from "../../common/constants/modules.constants";
 import { ROLE_PERMISSION_MAP } from "../../common/constants/permissions.constants";
+import { SUPER_ADMIN_ROLE } from "../../common/constants/user-role.constants";
 import { PrismaService } from "../../database/prisma.service";
 import { RegisterDto } from "./dto/register.dto";
 import { LoginDto } from "./dto/login.dto";
@@ -158,7 +159,7 @@ export class AuthService {
 
     const company = user.memberships[0]?.company || null;
 
-    if (user.role !== "SUPER_ADMIN" && (!company || company.status !== "ACTIVE" || company.deletedAt)) {
+    if (user.role !== SUPER_ADMIN_ROLE && (!company || company.status !== "ACTIVE" || company.deletedAt)) {
       this.logger.warn("auth.login_blocked reason=inactive_company");
       throw new UnauthorizedException({ code: "COMPANY_BLOCKED", message: "Kompaniya bloklangan." });
     }
@@ -279,7 +280,7 @@ export class AuthService {
       ? user.memberships.find((item) => item.companyId === companyId)
       : user.memberships[0];
     const company = membership?.company || null;
-    const role = user.role === "SUPER_ADMIN" ? "SUPER_ADMIN" : membership?.role || user.role;
+    const role = user.role === SUPER_ADMIN_ROLE ? SUPER_ADMIN_ROLE : membership?.role || user.role;
     const permissions = ROLE_PERMISSION_MAP[role] || [];
     const accessToken = await this.jwt.signAsync(
       {
@@ -315,7 +316,7 @@ export class AuthService {
       jobTitle: user.jobTitle || "",
       companyId: company?.id || null,
       businessId: company?.id || null,
-      accountId: company?.id || (role === "SUPER_ADMIN" ? "platform" : null),
+      accountId: company?.id || (role === SUPER_ADMIN_ROLE ? "platform" : null),
       companyName: company?.name || null,
       businessName: company?.businessName || company?.name || null,
       permissions,
@@ -353,6 +354,8 @@ export class AuthService {
 
     return {
       user: safeUser,
+      role: safeUser.role,
+      status: safeUser.status,
       account,
       session: {
         userId: user.id,

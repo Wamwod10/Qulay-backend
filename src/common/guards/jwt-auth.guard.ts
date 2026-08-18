@@ -5,6 +5,7 @@ import { JwtService } from "@nestjs/jwt";
 
 import { IS_PUBLIC_KEY } from "../decorators/public.decorator";
 import { ROLE_PERMISSION_MAP } from "../constants/permissions.constants";
+import { SUPER_ADMIN_ROLE } from "../constants/user-role.constants";
 import { PrismaService } from "../../database/prisma.service";
 
 @Injectable()
@@ -79,7 +80,7 @@ export class JwtAuthGuard implements CanActivate {
       ? user.memberships.find((item) => item.companyId === requestedCompanyId)
       : user.memberships[0];
 
-    if (user.role !== "SUPER_ADMIN") {
+    if (user.role !== SUPER_ADMIN_ROLE) {
       if (!membership) {
         throw new UnauthorizedException({
           code: "TENANT_REQUIRED",
@@ -96,8 +97,8 @@ export class JwtAuthGuard implements CanActivate {
       }
     }
 
-    const companyId = user.role === "SUPER_ADMIN" ? requestedCompanyId : membership?.companyId;
-    const role = user.role === "SUPER_ADMIN" ? user.role : membership?.role || user.role;
+    const companyId = user.role === SUPER_ADMIN_ROLE ? requestedCompanyId : membership?.companyId;
+    const role = user.role === SUPER_ADMIN_ROLE ? user.role : membership?.role || user.role;
 
     request.user = {
       id: user.id,

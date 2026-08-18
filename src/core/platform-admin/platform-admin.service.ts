@@ -2,6 +2,7 @@ import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundExce
 import { Prisma } from "@prisma/client";
 
 import { PLATFORM_MODULES } from "../../common/constants/modules.constants";
+import { SUPER_ADMIN_ROLE } from "../../common/constants/user-role.constants";
 import { getPagination, getPaginationMeta } from "../../common/utils/pagination.util";
 import { PrismaService } from "../../database/prisma.service";
 
@@ -158,7 +159,7 @@ export class PlatformAdminService {
       throw new NotFoundException({ code: "USER_NOT_FOUND", message: "User topilmadi." });
     }
 
-    if (user.role === "SUPER_ADMIN") {
+    if (user.role === SUPER_ADMIN_ROLE) {
       throw new ForbiddenException({ code: "SUPER_ADMIN_PROTECTED", message: "Super Admin himoyalangan." });
     }
 
@@ -194,7 +195,7 @@ export class PlatformAdminService {
       throw new NotFoundException({ code: "USER_NOT_FOUND", message: "User topilmadi." });
     }
 
-    if (user.role === "SUPER_ADMIN") {
+    if (user.role === SUPER_ADMIN_ROLE) {
       throw new ForbiddenException({ code: "SUPER_ADMIN_PROTECTED", message: "Super Admin himoyalangan." });
     }
 
@@ -521,7 +522,7 @@ export class PlatformAdminService {
       name: user.fullName,
       email: user.email,
       phone: user.phone,
-      role: user.role === "SUPER_ADMIN" ? "SUPER_ADMIN" : membership?.role || user.role,
+      role: user.role === SUPER_ADMIN_ROLE ? SUPER_ADMIN_ROLE : membership?.role || user.role,
       status: user.status,
       companyId: company?.id || null,
       businessId: company?.id || null,

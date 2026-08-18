@@ -3,6 +3,7 @@ import { Reflector } from "@nestjs/core";
 
 import { MODULES_KEY } from "../decorators/modules.decorator";
 import { PrismaService } from "../../database/prisma.service";
+import { SUPER_ADMIN_ROLE } from "../constants/user-role.constants";
 
 @Injectable()
 export class ModuleAccessGuard implements CanActivate {
@@ -24,7 +25,7 @@ export class ModuleAccessGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const user = request.user;
 
-    if (user?.role === "SUPER_ADMIN") {
+    if (user?.role === SUPER_ADMIN_ROLE) {
       return true;
     }
 

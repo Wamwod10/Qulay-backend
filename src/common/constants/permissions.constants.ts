@@ -1,3 +1,5 @@
+import { SUPER_ADMIN_ROLE } from "./user-role.constants";
+
 export const DEFAULT_PERMISSIONS = [
   "dashboard.view",
   "sales.view",
@@ -32,7 +34,7 @@ export const DEFAULT_PERMISSIONS = [
 ];
 
 export const ROLE_PERMISSION_MAP: Record<string, string[]> = {
-  SUPER_ADMIN: ["*"],
+  [SUPER_ADMIN_ROLE]: ["*"],
   OWNER: DEFAULT_PERMISSIONS,
   ADMIN: DEFAULT_PERMISSIONS,
   MANAGER: DEFAULT_PERMISSIONS.filter((permission) => permission !== "settings.manage"),
