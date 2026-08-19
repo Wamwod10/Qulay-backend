@@ -10,8 +10,9 @@ export const toNumber = (value: unknown) => {
 
 export const roundMoney = (value: unknown, precision = 2) => {
   const factor = 10 ** precision;
-
-  return Math.round(toNumber(value) * factor) / factor;
+  const number = toNumber(value);
+  if (!Number.isFinite(number)) return 0;
+  return Number((Math.round((number + Number.EPSILON) * factor) / factor).toFixed(precision));
 };
 
 export const decimalToNumber = (value: unknown) => {

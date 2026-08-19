@@ -124,6 +124,7 @@ model Company {
   branches      Branch[]
   warehouses    Warehouse[]
   products      Product[]
+  categories    Category[]
   stockItems    StockItem[]
   stockMoves    StockMovement[]
   suppliers     Supplier[]
@@ -137,6 +138,11 @@ model Company {
   production    ProductionOrder[]
   employees     Employee[]
   auditLogs     AuditLog[]
+  batches       Batch[]
+  batchConsumptions BatchConsumption[]
+  inventoryCounts InventoryCount[]
+  supplierPriceHistory SupplierPriceHistory[]
+  inventoryPolicy String              @default("FEFO")
   createdAt     DateTime              @default(now())
   updatedAt     DateTime              @updatedAt
 
@@ -289,6 +295,8 @@ model Warehouse {
   company   Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
   stock     StockItem[]
   movements StockMovement[]
+  batches   Batch[]
+  inventoryCounts InventoryCount[]
   purchases Purchase[]
   sales     Sale[]
   createdAt DateTime        @default(now())
@@ -307,21 +315,34 @@ model Product {
   barcode       String?
   type          String?
   category      String?
+  categoryId    String?
   brand         String?
   unit          String          @default("dona")
-  stock         Decimal         @default(0) @db.Decimal(18, 3)
-  minimumStock  Decimal         @default(0) @db.Decimal(18, 3)
+  stock         Decimal         @default(0) @db.Decimal(18, 6)
+  minimumStock  Decimal         @default(0) @db.Decimal(18, 6)
+  reorderPoint  Decimal         @default(0) @db.Decimal(18, 6)
   cost          Decimal         @default(0) @db.Decimal(18, 2)
   salePrice     Decimal?        @db.Decimal(18, 2)
   tax           Decimal         @default(0) @db.Decimal(9, 2)
   discount      Decimal         @default(0) @db.Decimal(9, 2)
   image         String?
   notes         String?
+  expiryDate    DateTime?
+  normalWastePercent Decimal?   @db.Decimal(9, 4)
+  parentProductId String?
+  packSize      Decimal?        @db.Decimal(18, 6)
+  packUnit      String?
+  isVariant     Boolean         @default(false)
   status        RecordStatus    @default(ACTIVE)
   supplierId    String?
   company       Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
   supplier      Supplier?       @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  categoryRef   Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   stockItems    StockItem[]
+  batches       Batch[]
+  supplierPriceHistory SupplierPriceHistory[]
+  parentProduct Product?        @relation("ProductVariants", fields: [parentProductId], references: [id], onDelete: SetNull)
+  variants      Product[]       @relation("ProductVariants")
   movements     StockMovement[]
   purchaseItems PurchaseItem[]
   saleItems     SaleItem[]
@@ -336,6 +357,22 @@ model Product {
   @@index([companyId])
   @@index([companyId, status])
   @@index([companyId, createdAt])
+  @@index([categoryId])
+  @@index([parentProductId])
+}
+
+model Category {
+  id        String       @id @default(cuid())
+  companyId String
+  name      String
+  status    RecordStatus @default(ACTIVE)
+  company   Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  products  Product[]
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@unique([companyId, name])
+  @@index([companyId, status])
 }
 
 model StockItem {
@@ -343,10 +380,10 @@ model StockItem {
   companyId    String
   warehouseId  String
   productId    String
-  quantity     Decimal   @default(0) @db.Decimal(18, 3)
-  reserved     Decimal   @default(0) @db.Decimal(18, 3)
+  quantity     Decimal   @default(0) @db.Decimal(18, 6)
+  reserved     Decimal   @default(0) @db.Decimal(18, 6)
   cost         Decimal   @default(0) @db.Decimal(18, 2)
-  minimumStock Decimal   @default(0) @db.Decimal(18, 3)
+  minimumStock Decimal   @default(0) @db.Decimal(18, 6)
   company      Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   warehouse    Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
   product      Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
@@ -368,7 +405,7 @@ model StockMovement {
   productId              String
   productName            String?
   type                   StockMovementType
-  quantity               Decimal           @db.Decimal(18, 3)
+  quantity               Decimal           @db.Decimal(18, 6)
   unit                   String?
   cost                   Decimal?          @db.Decimal(18, 2)
   reason                 String?
@@ -376,9 +413,11 @@ model StockMovement {
   sourceId               String?
   idempotencyKey         String?
   note                   String?
+  batchId                String?
   company                Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
   warehouse              Warehouse         @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
   product                Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  batch                  Batch?            @relation(fields: [batchId], references: [id], onDelete: SetNull)
   createdAt              DateTime          @default(now())
 
   @@unique([companyId, idempotencyKey])
@@ -387,6 +426,56 @@ model StockMovement {
   @@index([productId])
   @@index([sourceType, sourceId])
   @@index([createdAt])
+  @@index([batchId])
+}
+
+model Batch {
+  id                String       @id @default(cuid())
+  companyId         String
+  batchNumber       String
+  productId         String
+  warehouseId       String
+  quantity          Decimal      @default(0) @db.Decimal(18, 6)
+  remainingQuantity Decimal      @default(0) @db.Decimal(18, 6)
+  productionDate    DateTime?
+  receivedDate      DateTime?
+  expiryDate        DateTime?
+  unitCost          Decimal      @default(0) @db.Decimal(18, 6)
+  sourceType        String
+  sourceId          String?
+  status            RecordStatus @default(ACTIVE)
+  company           Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product           Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse         Warehouse    @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  consumptions      BatchConsumption[]
+  movements         StockMovement[]
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@unique([companyId, batchNumber])
+  @@index([companyId, productId, warehouseId])
+  @@index([companyId, expiryDate])
+  @@index([companyId, receivedDate])
+}
+
+model BatchConsumption {
+  id             String   @id @default(cuid())
+  companyId      String
+  batchId        String
+  productId      String
+  warehouseId    String
+  quantity       Decimal  @db.Decimal(18, 6)
+  unitCost       Decimal  @db.Decimal(18, 6)
+  sourceType     String
+  sourceId       String
+  idempotencyKey String?
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  batch          Batch    @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+
+  @@unique([companyId, idempotencyKey])
+  @@index([companyId, productId, warehouseId])
+  @@index([sourceType, sourceId])
 }
 
 model Supplier {
@@ -404,6 +493,7 @@ model Supplier {
   company       Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
   products      Product[]
   purchases     Purchase[]
+  priceHistory  SupplierPriceHistory[]
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
   deletedAt     DateTime?
@@ -451,9 +541,11 @@ model PurchaseItem {
   productId        String?
   productName      String
   sku              String?
-  quantity         Decimal  @db.Decimal(18, 3)
-  receivedQuantity Decimal  @default(0) @db.Decimal(18, 3)
+  quantity         Decimal  @db.Decimal(18, 6)
+  purchaseQuantity Decimal? @db.Decimal(18, 6)
+  receivedQuantity Decimal  @default(0) @db.Decimal(18, 6)
   unit             String   @default("dona")
+  purchaseUnit     String?
   cost             Decimal  @default(0) @db.Decimal(18, 2)
   salePrice        Decimal? @db.Decimal(18, 2)
   subtotal         Decimal  @default(0) @db.Decimal(18, 2)
@@ -539,6 +631,8 @@ model Sale {
   returnStatus   String?
   returnedAmount Decimal              @default(0) @db.Decimal(18, 2)
   netTotal       Decimal              @default(0) @db.Decimal(18, 2)
+  cogs           Decimal              @default(0) @db.Decimal(18, 6)
+  profit         Decimal              @default(0) @db.Decimal(18, 6)
   orderDate      DateTime?
   completedAt    DateTime?
   cancelledAt    DateTime?
@@ -571,11 +665,12 @@ model SaleItem {
   productName String
   sku         String?
   barcode     String?
-  quantity    Decimal  @db.Decimal(18, 3)
+  quantity    Decimal  @db.Decimal(18, 6)
   unit        String   @default("dona")
   price       Decimal  @db.Decimal(18, 2)
   cost        Decimal  @default(0) @db.Decimal(18, 2)
   subtotal    Decimal  @db.Decimal(18, 2)
+  cogs        Decimal  @default(0) @db.Decimal(18, 6)
   sale        Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
   product     Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
 
@@ -602,7 +697,7 @@ model SaleReturn {
   productId    String?
   productName  String
   sku          String?
-  quantity     Decimal  @db.Decimal(18, 3)
+  quantity     Decimal  @db.Decimal(18, 6)
   unit         String   @default("dona")
   refundAmount Decimal  @default(0) @db.Decimal(18, 2)
   reason       String?
@@ -671,10 +766,13 @@ model Bom {
   name              String
   outputProductId   String?
   outputProductName String?
-  outputQuantity    Decimal           @default(1) @db.Decimal(18, 3)
+  outputQuantity    Decimal           @default(1) @db.Decimal(18, 6)
   unit              String            @default("dona")
   overheadCost      Decimal           @default(0) @db.Decimal(18, 2)
   status            RecordStatus      @default(ACTIVE)
+  version           Int               @default(1)
+  versionGroupId    String?
+  normalWastePercent Decimal?         @db.Decimal(9, 4)
   company           Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
   outputProduct     Product?          @relation(fields: [outputProductId], references: [id], onDelete: SetNull)
   materials         BomMaterial[]
@@ -684,6 +782,7 @@ model Bom {
 
   @@index([companyId])
   @@index([companyId, status])
+  @@index([companyId, versionGroupId])
 }
 
 model BomMaterial {
@@ -691,7 +790,7 @@ model BomMaterial {
   bomId       String
   productId   String?
   productName String
-  quantity    Decimal  @db.Decimal(18, 3)
+  quantity    Decimal  @db.Decimal(18, 6)
   unit        String   @default("dona")
   cost        Decimal  @default(0) @db.Decimal(18, 2)
   bom         Bom      @relation(fields: [bomId], references: [id], onDelete: Cascade)
@@ -708,14 +807,36 @@ model ProductionOrder {
   bomId             String?
   outputProductId   String?
   outputProductName String?
-  plannedQuantity   Decimal           @db.Decimal(18, 3)
-  actualQuantity    Decimal           @default(0) @db.Decimal(18, 3)
+  unit              String            @default("dona")
+  plannedQuantity   Decimal           @db.Decimal(18, 6)
+  actualQuantity    Decimal           @default(0) @db.Decimal(18, 6)
+  acceptedQuantity  Decimal           @default(0) @db.Decimal(18, 6)
+  defectQuantity    Decimal           @default(0) @db.Decimal(18, 6)
+  wasteQuantity     Decimal           @default(0) @db.Decimal(18, 6)
+  yieldPercent      Decimal           @default(0) @db.Decimal(9, 4)
+  wastePercent      Decimal           @default(0) @db.Decimal(9, 4)
+  recipeVersion     Int?
+  recipeSnapshot    Json?
+  packaging         Json?
+  remainingBulkQuantity Decimal       @default(0) @db.Decimal(18, 6)
   warehouseId       String?
   status            ProductionStatus  @default(PLANNED)
   materialCost      Decimal           @default(0) @db.Decimal(18, 2)
   overheadCost      Decimal           @default(0) @db.Decimal(18, 2)
   productionCost    Decimal           @default(0) @db.Decimal(18, 2)
   unitCost          Decimal           @default(0) @db.Decimal(18, 2)
+  actualMaterialCost Decimal          @default(0) @db.Decimal(18, 6)
+  actualProductionCost Decimal        @default(0) @db.Decimal(18, 6)
+  actualUnitCost    Decimal           @default(0) @db.Decimal(18, 6)
+  currency          String            @default("UZS")
+  costingPolicy     String            @default("CURRENT_AT_START")
+  materialSnapshot  Json?
+  actualMaterials   Json?
+  overheadItems     Json?
+  qualityControl    Json?
+  qualityStatus     String?
+  qualityNote       String?
+  completionNote    String?
   startedAt         DateTime?
   completedAt       DateTime?
   cancelledAt       DateTime?
@@ -822,4 +943,42 @@ model Payroll {
   @@index([companyId])
   @@index([employeeId])
   @@index([status])
+}
+
+model InventoryCount {
+  id             String   @id @default(cuid())
+  companyId      String
+  warehouseId    String
+  productId      String
+  systemQuantity Decimal  @db.Decimal(18, 6)
+  actualQuantity Decimal  @db.Decimal(18, 6)
+  difference     Decimal  @db.Decimal(18, 6)
+  reason         String
+  approvedBy     String?
+  adjustmentId   String?
+  createdAt      DateTime @default(now())
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  warehouse      Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, warehouseId, productId])
+  @@index([createdAt])
+}
+
+model SupplierPriceHistory {
+  id         String   @id @default(cuid())
+  companyId  String
+  supplierId String?
+  productId  String
+  date       DateTime @default(now())
+  unit       String
+  price      Decimal  @db.Decimal(18, 6)
+  currency   String
+  sourceType String?
+  sourceId   String?
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplier   Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, productId, date])
+  @@index([supplierId, productId])
 }

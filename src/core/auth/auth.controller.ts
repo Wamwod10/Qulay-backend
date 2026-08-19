@@ -1,4 +1,4 @@
-import { Body, Controller, Get, NotImplementedException, Post, Req } from "@nestjs/common";
+import { Body, Controller, Get, Post, Req } from "@nestjs/common";
 
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { Public } from "../../common/decorators/public.decorator";
@@ -24,11 +24,8 @@ export class AuthController {
 
   @Public()
   @Post("reset-password")
-  resetPassword() {
-    throw new NotImplementedException({
-      code: "PASSWORD_RESET_NOT_CONFIGURED",
-      message: "Parolni tiklash uchun tasdiqlangan token yoki OTP kerak.",
-    });
+  resetPassword(@Body() body: any) {
+    return this.auth.resetPassword(body);
   }
 
   @Get("me")

@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 
 import {
   AgentsController,
+  CategoriesController,
   ContextController,
   CustomersController,
   DashboardController,
@@ -23,6 +24,7 @@ import { BusinessService } from "./business.service";
   controllers: [
     ContextController,
     ProductsController,
+    CategoriesController,
     WarehousesController,
     InventoryController,
     SuppliersController,

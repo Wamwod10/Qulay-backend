@@ -22,11 +22,20 @@ export class AppExceptionFilter implements ExceptionFilter {
     const path = String(request.url || "").split("?")[0];
 
     if (exception instanceof Prisma.PrismaClientKnownRequestError) {
-      const status = exception.code === "P2025" ? 404 : 409;
+      const codeMap: Record<string, { code: string; message: string; status: number }> = {
+        P2002: { code: "DUPLICATE_RECORD", message: "Bu qiymat allaqachon mavjud.", status: 409 },
+        P2003: { code: "RELATED_RECORD_INVALID", message: "Bog'langan ma'lumot yaroqsiz yoki mavjud emas.", status: 409 },
+        P2014: { code: "RELATED_RECORD_CONFLICT", message: "Bu ma'lumot boshqa tarix bilan bog'langan.", status: 409 },
+        P2021: { code: "DATABASE_SCHEMA_NOT_READY", message: "Tizim ma'lumotlar bazasi yangilanmoqda. Keyinroq urinib ko'ring.", status: 503 },
+        P2025: { code: "NOT_FOUND", message: "Ma'lumot topilmadi.", status: 404 },
+        P2028: { code: "DATABASE_TRANSACTION_FAILED", message: "Amal yakunlanmadi. Qayta urinib ko'ring.", status: 409 },
+      };
+      const mapped = codeMap[exception.code] || { code: "DATABASE_OPERATION_FAILED", message: "Ma'lumotlar bazasi amali bajarilmadi.", status: 409 };
+      const status = mapped.status;
       response.status(status).json({
         statusCode: status,
-        code: exception.code === "P2025" ? "NOT_FOUND" : exception.code === "P2002" ? "UNIQUE_CONSTRAINT" : exception.code,
-        message: exception.code === "P2025" ? "Ma'lumot topilmadi." : exception.code === "P2002" ? "Bu qiymat allaqachon mavjud." : "Database amali bajarilmadi.",
+        code: mapped.code,
+        message: mapped.message,
         path,
         timestamp: new Date().toISOString(),
       });

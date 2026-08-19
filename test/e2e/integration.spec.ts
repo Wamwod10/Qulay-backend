@@ -210,10 +210,32 @@ describe("health, auth and error boundaries", () => {
     assert.equal(blockedMe.body.code, "ACCOUNT_BLOCKED");
   });
 
-  test("password reset stays provider-gated and does not directly reset a password", async () => {
-    const result = await api("/auth/reset-password", { method: "POST", body: { email: "any@example.test", password: "new" } });
-    assert.equal(result.status, 501);
-    assert.equal(result.body.code, "PASSWORD_RESET_NOT_CONFIGURED");
+  test("MVP password reset validates, updates bcrypt and allows a new login", async () => {
+    const fixture = await createFixture("password-reset");
+    const mismatch = await api("/auth/reset-password", {
+      method: "POST",
+      body: { email: fixture.user.email, newPassword: "NewPassw0rd", confirmPassword: "Different9" },
+    });
+    assert.equal(mismatch.status, 400);
+    assert.equal(mismatch.body.code, "PASSWORD_MISMATCH");
+
+    const result = await api("/auth/reset-password", {
+      method: "POST",
+      body: { email: fixture.user.email, newPassword: "NewPassw0rd", confirmPassword: "NewPassw0rd" },
+    });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.success, true);
+
+    const newLogin = await api("/auth/login", {
+      method: "POST",
+      body: { identifier: fixture.user.email, password: "NewPassw0rd" },
+      headers: { "x-forwarded-for": `10.25.0.${++requestCounter}` },
+    });
+    assert.ok([200, 201].includes(newLogin.status), JSON.stringify(newLogin.body));
+    assert.ok(newLogin.body.accessToken);
+
+    const audit = await prisma.auditLog.findFirst({ where: { action: "password.reset", targetId: fixture.user.id } });
+    assert.ok(audit);
   });
 });
 
@@ -456,6 +478,130 @@ describe("tenant isolation and transaction invariants", () => {
     assert.equal(Number(outputStock?.quantity), 5);
     assert.equal(await prisma.stockMovement.count({ where: { companyId: fixture.company.id, sourceType: "PRODUCTION", sourceId: order.body.id, type: "CONSUME" } }), 1);
     assert.equal(await prisma.stockMovement.count({ where: { companyId: fixture.company.id, sourceType: "PRODUCTION", sourceId: order.body.id, type: "PRODUCE" } }), 1);
+  });
+
+  test("batch expiry, inventory count, recipe version, packaging and COGS persist through APIs", async () => {
+    const fixture = await createFixture("new-flows");
+    const token = await login(fixture.user.email, fixture);
+    const raw = await api("/products", {
+      method: "POST",
+      token,
+      companyId: fixture.company.id,
+      body: { name: "Integration Flour", sku: `FLOW-RAW-${fixtureCounter}`, type: "RAW_MATERIAL", unit: "kg", stock: 10, cost: 10, salePrice: 0, warehouseId: fixture.warehouse.id, reorderPoint: 12 },
+    });
+    assert.equal(raw.status, 201, JSON.stringify(raw.body));
+    const bag = await api("/products", {
+      method: "POST",
+      token,
+      companyId: fixture.company.id,
+      body: { name: "Integration Bag", sku: `FLOW-BAG-${fixtureCounter}`, type: "RAW_MATERIAL", unit: "dona", stock: 3, cost: 1, salePrice: 0, warehouseId: fixture.warehouse.id },
+    });
+    assert.equal(bag.status, 201, JSON.stringify(bag.body));
+    const output = await api("/products", {
+      method: "POST",
+      token,
+      companyId: fixture.company.id,
+      body: { name: "Integration Powder", sku: `FLOW-OUT-${fixtureCounter}`, type: "FINISHED_GOOD", unit: "kg", stock: 0, cost: 0, salePrice: 50, warehouseId: fixture.warehouse.id },
+    });
+    assert.equal(output.status, 201, JSON.stringify(output.body));
+
+    const supplier = await api("/suppliers", { method: "POST", token, companyId: fixture.company.id, body: { name: "Flow Supplier" } });
+    assert.equal(supplier.status, 201);
+    const purchase = await api("/purchases", {
+      method: "POST",
+      token,
+      companyId: fixture.company.id,
+      body: { supplierId: supplier.body.id, warehouseId: fixture.warehouse.id, items: [{ productId: raw.body.id, quantity: 1, cost: 11, unit: "kg" }] },
+    });
+    assert.equal(purchase.status, 201, JSON.stringify(purchase.body));
+    const expiryDate = new Date(Date.now() + 5 * 86_400_000).toISOString();
+    const received = await api(`/purchases/${purchase.body.id}/receive`, {
+      method: "POST",
+      token,
+      companyId: fixture.company.id,
+      body: { expiryDate, idempotencyKey: `flow-receive-${fixtureCounter}` },
+    });
+    assert.equal(received.status, 201, JSON.stringify(received.body));
+    const batches = await api(`/inventory/batches?productId=${raw.body.id}`, { token, companyId: fixture.company.id });
+    assert.equal(batches.status, 200);
+    assert.ok(batches.body.batches.some((batch: any) => batch.expiryStatus === "near_expiry"));
+    const warnings = await api(`/inventory/batches/warnings?productId=${raw.body.id}&days=30`, { token, companyId: fixture.company.id });
+    assert.equal(warnings.status, 200);
+    assert.ok(warnings.body.warnings.length >= 1);
+
+    const stockOut = await api("/inventory/stock/out", {
+      method: "POST",
+      token,
+      companyId: fixture.company.id,
+      body: { warehouseId: fixture.warehouse.id, productId: raw.body.id, quantity: 1, idempotencyKey: `flow-fefo-${fixtureCounter}` },
+    });
+    assert.equal(stockOut.status, 201, JSON.stringify(stockOut.body));
+    assert.equal(await prisma.batchConsumption.count({ where: { companyId: fixture.company.id, productId: raw.body.id } }), 1);
+
+    const count = await api("/inventory/counts", {
+      method: "POST",
+      token,
+      companyId: fixture.company.id,
+      body: { warehouseId: fixture.warehouse.id, productId: raw.body.id, actualQuantity: 9, reason: "Flow count" },
+    });
+    assert.equal(count.status, 201, JSON.stringify(count.body));
+    assert.equal(Number(count.body.difference), -1);
+    assert.equal(await prisma.inventoryCount.count({ where: { companyId: fixture.company.id, productId: raw.body.id } }), 1);
+
+    const bom = await api("/manufacturing/boms", {
+      method: "POST",
+      token,
+      companyId: fixture.company.id,
+      body: { name: "Flow Recipe", outputProductId: output.body.id, outputQuantity: 1, normalWastePercent: 2, materials: [{ productId: raw.body.id, productName: raw.body.name, quantity: 1, unit: "kg", cost: 10 }] },
+    });
+    assert.equal(bom.status, 201, JSON.stringify(bom.body));
+    const versionTwo = await api(`/manufacturing/boms/${bom.body.id}`, {
+      method: "PATCH",
+      token,
+      companyId: fixture.company.id,
+      body: { outputProductId: output.body.id, outputQuantity: 1, normalWastePercent: 2, materials: [{ productId: raw.body.id, productName: raw.body.name, quantity: 1, unit: "kg", cost: 10 }] },
+    });
+    assert.equal(versionTwo.status, 200, JSON.stringify(versionTwo.body));
+    assert.equal(Number(versionTwo.body.version), 2);
+
+    const order = await api("/manufacturing/orders", {
+      method: "POST",
+      token,
+      companyId: fixture.company.id,
+      body: { bomId: versionTwo.body.id, warehouseId: fixture.warehouse.id, plannedQuantity: 2 },
+    });
+    assert.equal(order.status, 201, JSON.stringify(order.body));
+    const started = await api(`/manufacturing/orders/${order.body.id}/start`, { method: "POST", token, companyId: fixture.company.id, body: {} });
+    assert.equal(started.status, 201, JSON.stringify(started.body));
+    const completed = await api(`/manufacturing/orders/${order.body.id}/complete`, {
+      method: "POST",
+      token,
+      companyId: fixture.company.id,
+      body: {
+        producedQuantity: 2,
+        acceptedQuantity: 2,
+        actualMaterials: [{ productId: raw.body.id, actualQuantity: 2 }],
+        overheadItems: [{ type: "ELECTRICITY", amount: 5, description: "Flow power" }],
+        packaging: [{ quantity: 1, packSize: 1, packUnit: "kg", materials: [{ productId: bag.body.id, quantity: 1 }] }],
+        completionNote: "Flow complete",
+      },
+    });
+    assert.equal(completed.status, 201, JSON.stringify(completed.body));
+    assert.equal(Number(completed.body.actualQuantity), 2);
+    assert.equal(Number(completed.body.yieldPercent), 100);
+    assert.equal(Number(completed.body.remainingBulkQuantity), 1);
+    assert.equal(completed.body.completionNote, "Flow complete");
+    assert.equal(await prisma.product.count({ where: { companyId: fixture.company.id, parentProductId: output.body.id, isVariant: true } }), 1);
+
+    const sale = await api("/sales/complete", {
+      method: "POST",
+      token,
+      companyId: fixture.company.id,
+      headers: { "idempotency-key": `flow-sale-${fixtureCounter}` },
+      body: { warehouseId: fixture.warehouse.id, items: [{ productId: output.body.id, quantity: 1, price: 50 }], payments: [{ method: "CASH", amount: 50 }] },
+    });
+    assert.equal(sale.status, 201, JSON.stringify(sale.body));
+    assert.ok(Number(sale.body.cogs) >= 0);
   });
 
   test("payroll supports partial and final payments without duplicate finance rows", async () => {

@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcrypt";
@@ -6,6 +6,7 @@ import * as bcrypt from "bcrypt";
 import { PLATFORM_MODULES } from "../../common/constants/modules.constants";
 import { ROLE_PERMISSION_MAP } from "../../common/constants/permissions.constants";
 import { SUPER_ADMIN_ROLE } from "../../common/constants/user-role.constants";
+import { normalizeCurrency } from "../../common/utils/currency.util";
 import { PrismaService } from "../../database/prisma.service";
 import { RegisterDto } from "./dto/register.dto";
 import { LoginDto } from "./dto/login.dto";
@@ -219,7 +220,7 @@ export class AuthService {
         email: dto.email,
         address: dto.address,
         country: dto.country,
-        currency: dto.currency,
+        currency: dto.currency === undefined ? undefined : normalizeCurrency(dto.currency),
         taxId: dto.taxId,
         logo: dto.logo,
       },
@@ -239,6 +240,25 @@ export class AuthService {
     }
     await this.prisma.user.update({ where: { id: userId }, data: { passwordHash: await bcrypt.hash(nextPassword, 12) } });
     return { success: true };
+  }
+
+  // MVP reset flow: email lookup plus bcrypt update. OTP/email verification is intentionally deferred.
+  async resetPassword(dto: any) {
+    const email = normalizeEmail(dto.email);
+    const nextPassword = String(dto.newPassword || dto.password || "");
+    const confirmation = String(dto.confirmPassword || "");
+    if (!email) throw new BadRequestException({ code: "RESET_EMAIL_REQUIRED", message: "Email manzilini kiriting." });
+    if (nextPassword.length < 8 || !/[A-Za-z]/.test(nextPassword) || !/\d/.test(nextPassword)) {
+      throw new BadRequestException({ code: "PASSWORD_INVALID", message: "Yangi parol kamida 8 belgi, 1 harf va 1 raqamdan iborat bo'lsin." });
+    }
+    if (nextPassword !== confirmation) throw new BadRequestException({ code: "PASSWORD_MISMATCH", message: "Yangi parollar mos emas." });
+    const user = await this.prisma.user.findFirst({ where: { email, deletedAt: null } });
+    if (!user) throw new NotFoundException({ code: "RESET_USER_NOT_FOUND", message: "Bu email bilan foydalanuvchi topilmadi." });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: user.id }, data: { passwordHash: await bcrypt.hash(nextPassword, 12), lastActiveAt: null } });
+      await tx.auditLog.create({ data: { action: "password.reset", targetType: "user", targetId: user.id, metadata: { method: "MVP_EMAIL_LOOKUP" } } });
+    });
+    return { success: true, message: "Parol yangilandi. Endi yangi parol bilan kiring." };
   }
 
   async ensurePlatformModules(tx: any = this.prisma) {
