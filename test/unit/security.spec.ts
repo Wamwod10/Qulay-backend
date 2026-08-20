@@ -1,15 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { parseCorsOrigins } from "../../src/config/cors.config";
+import { isCorsOriginAllowed, parseCorsOrigins } from "../../src/config/cors.config";
 import { validateEnv } from "../../src/config/env.validation";
 import { createAuthRateLimitMiddleware } from "../../src/common/middleware/auth-rate-limit.middleware";
 
 test("CORS config parses a strict comma-separated whitelist", () => {
-  assert.deepEqual(parseCorsOrigins("https://app.example.com, http://localhost:5173"), [
+  assert.deepEqual(parseCorsOrigins("https://app.example.com/login, http://localhost:5173/"), [
     "https://app.example.com",
     "http://localhost:5173",
   ]);
+});
+
+test("CORS config supports explicit wildcard preview origins", () => {
+  const origins = parseCorsOrigins("https://app.example.com, https://*.vercel.app");
+
+  assert.equal(isCorsOriginAllowed("https://app.example.com", origins), true);
+  assert.equal(isCorsOriginAllowed("https://qulay-inky.vercel.app", origins), true);
+  assert.equal(isCorsOriginAllowed("http://qulay-inky.vercel.app", origins), false);
+  assert.equal(isCorsOriginAllowed("https://example.com", origins), false);
 });
 
 test("production environment validation rejects a short JWT secret", () => {

@@ -10,7 +10,7 @@ import { AppValidationPipe } from "./common/pipes/validation.pipe";
 import { AppExceptionFilter } from "./common/filters/app-exception.filter";
 import { createAuthRateLimitMiddleware } from "./common/middleware/auth-rate-limit.middleware";
 import { securityHeadersMiddleware } from "./common/middleware/security-headers.middleware";
-import { parseCorsOrigins } from "./config/cors.config";
+import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.config";
 
 export async function createConfiguredApp(): Promise<INestApplication> {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
@@ -26,7 +26,7 @@ export async function createConfiguredApp(): Promise<INestApplication> {
   app.setGlobalPrefix("api");
   app.enableCors({
     origin: (origin, callback) => {
-      if (!origin || origins.includes(origin)) {
+      if (isCorsOriginAllowed(origin, origins)) {
         callback(null, true);
         return;
       }
