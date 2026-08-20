@@ -349,27 +349,43 @@ export class BusinessService {
     return { categories, data: categories };
   }
 
-  async createCategory(companyId: string, body: any) {
-    const name = String(body.name || "").trim();
-    if (!name) throw new BadRequestException({ code: "CATEGORY_NAME_REQUIRED", message: "Kategoriya nomini kiriting." });
-    const tenantId = this.requireCompany(companyId);
-<<<<<<< HEAD
-    return this.prisma.category.upsert({
-      where: { companyId_name: { companyId: tenantId, name } },
-      update: { status: "ACTIVE" },
-      create: { companyId: tenantId, name },
-    });
-=======
-    const existing = await this.prisma.category.findFirst({
-      where: { companyId: tenantId, name: { equals: name, mode: "insensitive" } },
-    });
-    if (existing) {
-      return this.prisma.category.update({ where: { id: existing.id }, data: { status: "ACTIVE" } });
-    }
+async createCategory(companyId: string, body: any) {
+  const name = String(body.name || "").trim();
 
-    return this.prisma.category.create({ data: { companyId: tenantId, name, status: "ACTIVE" } });
->>>>>>> beb45cc1 (final)
+  if (!name) {
+    throw new BadRequestException({
+      code: "CATEGORY_NAME_REQUIRED",
+      message: "Kategoriya nomini kiriting.",
+    });
   }
+
+  const tenantId = this.requireCompany(companyId);
+
+  const existing = await this.prisma.category.findFirst({
+    where: {
+      companyId: tenantId,
+      name: {
+        equals: name,
+        mode: "insensitive",
+      },
+    },
+  });
+
+  if (existing) {
+    return this.prisma.category.update({
+      where: { id: existing.id },
+      data: { status: "ACTIVE" },
+    });
+  }
+
+  return this.prisma.category.create({
+    data: {
+      companyId: tenantId,
+      name,
+      status: "ACTIVE",
+    },
+  });
+}
 
   async listStock(companyId: string, query: Record<string, string | undefined>) {
     const tenantId = this.requireCompany(companyId);
@@ -2270,29 +2286,46 @@ export class BusinessService {
     });
   }
 
-  private async ensureCategory(tx: Tx, companyId: string, value: unknown) {
-    const raw = String(value || "").trim();
-    if (!raw) return null;
-<<<<<<< HEAD
-    if (raw.startsWith("cat-")) return null;
-    const existing = await tx.category.findFirst({ where: { companyId, OR: [{ id: raw }, { name: raw }] } });
-    if (existing) return existing.id;
-    const category = await tx.category.create({ data: { companyId, name: raw } });
-=======
-    const existing = await tx.category.findFirst({
-      where: {
-        companyId,
-        OR: [
-          { id: raw },
-          { name: { equals: raw, mode: "insensitive" } },
-        ],
-      },
-    });
-    if (existing) return existing.id;
-    const category = await tx.category.create({ data: { companyId, name: raw, status: "ACTIVE" } });
->>>>>>> beb45cc1 (final)
-    return category.id;
+ private async ensureCategory(
+  tx: Tx,
+  companyId: string,
+  value: unknown,
+) {
+  const raw = String(value || "").trim();
+
+  if (!raw) {
+    return null;
   }
+
+  const existing = await tx.category.findFirst({
+    where: {
+      companyId,
+      OR: [
+        { id: raw },
+        {
+          name: {
+            equals: raw,
+            mode: "insensitive",
+          },
+        },
+      ],
+    },
+  });
+
+  if (existing) {
+    return existing.id;
+  }
+
+  const category = await tx.category.create({
+    data: {
+      companyId,
+      name: raw,
+      status: "ACTIVE",
+    },
+  });
+
+  return category.id;
+}
 
   private async ensureProduct(tx: Tx, companyId: string, productId: string | undefined, productName: unknown, type: string, unit: unknown) {
     if (productId) {

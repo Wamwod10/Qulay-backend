@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+} from "@nestjs/common";
 
 import { CurrentCompany } from "../../common/decorators/current-company.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -22,7 +32,10 @@ export class ProductsController {
   constructor(private readonly service: BusinessService) {}
 
   @Get()
-  list(@CurrentCompany() companyId: string, @Query() query: Record<string, string | undefined>) {
+  list(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
     return this.service.listProducts(companyId, query);
   }
 
@@ -43,22 +56,41 @@ export class ProductsController {
   }
 
   @Patch(":id")
-  update(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  update(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.updateProduct(companyId, id, body, userId);
   }
 
   @Patch(":id/status")
-  status(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any) {
+  status(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+  ) {
     return this.service.changeProductStatus(companyId, id, body.status);
   }
 
   @Patch(":id/stock")
-  stock(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  stock(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.adjustProductStock(companyId, id, body, userId);
   }
 
   @Patch(":id/prices")
-  prices(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  prices(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.updateProductPrices(companyId, id, body, userId);
   }
 
@@ -84,10 +116,8 @@ export class CategoriesController {
   }
 
   @Post()
-<<<<<<< HEAD
-=======
+  @Post()
   @AllowInlineCreateFrom("products")
->>>>>>> beb45cc1 (final)
   create(@CurrentCompany() companyId: string, @Body() body: any) {
     return this.service.createCategory(companyId, body);
   }
@@ -115,37 +145,59 @@ export class InventoryController {
   constructor(private readonly service: BusinessService) {}
 
   @Get("stock")
-  stock(@CurrentCompany() companyId: string, @Query() query: Record<string, string | undefined>) {
+  stock(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
     return this.service.listStock(companyId, query);
   }
 
   @Get("movements")
-  movements(@CurrentCompany() companyId: string, @Query() query: Record<string, string | undefined>) {
+  movements(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
     return this.service.listMovements(companyId, query);
   }
 
   @Get("batches")
-  batches(@CurrentCompany() companyId: string, @Query() query: Record<string, string | undefined>) {
+  batches(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
     return this.service.listBatches(companyId, query);
   }
 
   @Get("batches/warnings")
-  batchWarnings(@CurrentCompany() companyId: string, @Query() query: Record<string, string | undefined>) {
+  batchWarnings(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
     return this.service.batchWarnings(companyId, query);
   }
 
   @Get("counts")
-  counts(@CurrentCompany() companyId: string, @Query() query: Record<string, string | undefined>) {
+  counts(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
     return this.service.listInventoryCounts(companyId, query);
   }
 
   @Post("counts")
-  count(@CurrentCompany() companyId: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  count(
+    @CurrentCompany() companyId: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.createInventoryCount(companyId, body, userId);
   }
 
   @Get("purchase-suggestions")
-  purchaseSuggestions(@CurrentCompany() companyId: string, @Query() query: Record<string, string | undefined>) {
+  purchaseSuggestions(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
     return this.service.purchaseSuggestions(companyId, query);
   }
 
@@ -171,12 +223,18 @@ export class SuppliersController {
   constructor(private readonly service: BusinessService) {}
 
   @Get()
-  list(@CurrentCompany() companyId: string, @Query() query: Record<string, string | undefined>) {
+  list(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
     return this.service.listSuppliers(companyId, query);
   }
 
   @Get("price-history")
-  priceHistory(@CurrentCompany() companyId: string, @Query() query: Record<string, string | undefined>) {
+  priceHistory(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
     return this.service.listSupplierPriceHistory(companyId, query);
   }
 
@@ -192,7 +250,11 @@ export class SuppliersController {
   }
 
   @Patch(":id")
-  update(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any) {
+  update(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+  ) {
     return this.service.updateSupplier(companyId, id, body);
   }
 
@@ -208,7 +270,10 @@ export class PurchasesController {
   constructor(private readonly service: BusinessService) {}
 
   @Get()
-  list(@CurrentCompany() companyId: string, @Query() query: Record<string, string | undefined>) {
+  list(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
     return this.service.listPurchases(companyId, query);
   }
 
@@ -223,17 +288,31 @@ export class PurchasesController {
   }
 
   @Patch(":id")
-  update(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any) {
+  update(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+  ) {
     return this.service.updatePurchase(companyId, id, body);
   }
 
   @Post(":id/receive")
-  receive(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  receive(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.receivePurchase(companyId, id, body, userId);
   }
 
   @Post(":id/payment")
-  payment(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  payment(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.payPurchase(companyId, id, body, userId);
   }
 
@@ -249,7 +328,10 @@ export class SalesController {
   constructor(private readonly service: BusinessService) {}
 
   @Get()
-  list(@CurrentCompany() companyId: string, @Query() query: Record<string, string | undefined>) {
+  list(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
     return this.service.listSales(companyId, query);
   }
 
@@ -259,8 +341,18 @@ export class SalesController {
   }
 
   @Post("complete")
-  complete(@CurrentCompany() companyId: string, @Body() body: any, @Req() request: any, @CurrentUser("id") userId: string) {
-    return this.service.completeSale(companyId, body, request.headers["idempotency-key"], userId);
+  complete(
+    @CurrentCompany() companyId: string,
+    @Body() body: any,
+    @Req() request: any,
+    @CurrentUser("id") userId: string,
+  ) {
+    return this.service.completeSale(
+      companyId,
+      body,
+      request.headers["idempotency-key"],
+      userId,
+    );
   }
 
   @Get(":id")
@@ -269,12 +361,22 @@ export class SalesController {
   }
 
   @Post(":id/cancel")
-  cancel(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  cancel(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.cancelSale(companyId, id, body || {}, userId);
   }
 
   @Post(":id/return")
-  returnItems(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  returnItems(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.returnSale(companyId, id, body, userId);
   }
 }
@@ -301,12 +403,21 @@ export class CustomersController {
   }
 
   @Patch(":id")
-  update(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any) {
+  update(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+  ) {
     return this.service.updateCustomer(companyId, id, body);
   }
 
   @Post(":id/payment")
-  payment(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  payment(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.receiveCustomerPayment(companyId, id, body, userId);
   }
 
@@ -338,7 +449,11 @@ export class AgentsController {
   }
 
   @Patch(":id")
-  update(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any) {
+  update(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+  ) {
     return this.service.updateAgent(companyId, id, body);
   }
 
@@ -369,7 +484,12 @@ export class ManufacturingController {
   }
 
   @Patch("boms/:id")
-  updateBom(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  updateBom(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.updateBom(companyId, id, body, userId);
   }
 
@@ -394,38 +514,87 @@ export class ManufacturingController {
   }
 
   @Post("orders/:id/start")
-  start(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  start(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.startProduction(companyId, id, body || {}, userId);
   }
 
   @Post("orders/:id/complete")
-  complete(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  complete(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.completeProduction(companyId, id, body || {}, userId);
   }
 
   @Post("orders/:id/cancel")
-  cancel(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  cancel(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.cancelProduction(companyId, id, body || {}, userId);
   }
 
   @Post("orders/:id/stages/:stageId/start")
-  startStage(@CurrentCompany() companyId: string, @Param("id") id: string, @Param("stageId") stageId: string, @Body() body: any) {
-    return this.service.updateProductionStage(companyId, id, stageId, "start", body || {});
+  startStage(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Param("stageId") stageId: string,
+    @Body() body: any,
+  ) {
+    return this.service.updateProductionStage(
+      companyId,
+      id,
+      stageId,
+      "start",
+      body || {},
+    );
   }
 
   @Post("orders/:id/stages/:stageId/complete")
-  completeStage(@CurrentCompany() companyId: string, @Param("id") id: string, @Param("stageId") stageId: string, @Body() body: any) {
-    return this.service.updateProductionStage(companyId, id, stageId, "complete", body || {});
+  completeStage(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Param("stageId") stageId: string,
+    @Body() body: any,
+  ) {
+    return this.service.updateProductionStage(
+      companyId,
+      id,
+      stageId,
+      "complete",
+      body || {},
+    );
   }
 
   @Patch("orders/:id/quality")
-  quality(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any) {
+  quality(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+  ) {
     return this.service.updateProductionQuality(companyId, id, body || {});
   }
 
   @Patch("orders/:id/overhead")
-  overhead(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any) {
-    return this.service.updateProductionOverhead(companyId, id, Array.isArray(body) ? body : body?.items || body?.overheadItems || []);
+  overhead(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+  ) {
+    return this.service.updateProductionOverhead(
+      companyId,
+      id,
+      Array.isArray(body) ? body : body?.items || body?.overheadItems || [],
+    );
   }
 }
 
@@ -435,7 +604,10 @@ export class FinanceController {
   constructor(private readonly service: BusinessService) {}
 
   @Get("transactions")
-  transactions(@CurrentCompany() companyId: string, @Query() query: Record<string, string | undefined>) {
+  transactions(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
     return this.service.listFinance(companyId, query);
   }
 
@@ -476,12 +648,21 @@ export class EmployeesController {
   }
 
   @Post("payroll/:id/pay")
-  payPayroll(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any, @CurrentUser("id") userId: string) {
+  payPayroll(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
     return this.service.payPayroll(companyId, id, body, userId);
   }
 
   @Patch(":id")
-  update(@CurrentCompany() companyId: string, @Param("id") id: string, @Body() body: any) {
+  update(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+  ) {
     return this.service.updateEmployee(companyId, id, body);
   }
 
@@ -529,7 +710,11 @@ export class SettingsController {
   }
 
   @Patch()
-  update(@CurrentCompany() companyId: string, @CurrentUser("id") userId: string, @Body() body: any) {
+  update(
+    @CurrentCompany() companyId: string,
+    @CurrentUser("id") userId: string,
+    @Body() body: any,
+  ) {
     return this.service.updateSettings(companyId, body, userId);
   }
 }
