@@ -49,7 +49,10 @@ export class BusinessService {
     const search = query.search?.trim();
     const where: any = { companyId: tenantId, deletedAt: null };
 
-    if (query.status) where.status = query.status;
+    if (query.status) {
+      const statuses = String(query.status).split(",").map((status) => status.trim()).filter(Boolean);
+      where.status = statuses.length > 1 ? { in: statuses } : statuses[0];
+    }
     if (query.category) where.category = query.category;
     if (query.type) where.type = query.type;
     if (search) {
@@ -1636,10 +1639,20 @@ async createCategory(companyId: string, body: any) {
     return this.prisma.$transaction(async (tx) => {
       const order = await tx.productionOrder.findFirst({ where: { id, companyId: tenantId }, include: { bom: { include: { materials: true } } } });
       if (!order) throw new NotFoundException({ code: "PRODUCTION_NOT_FOUND", message: "Ishlab chiqarish topilmadi." });
-      if (order.status === "IN_PROGRESS") return this.productionOrderDto(order);
+      if (order.status === "IN_PROGRESS") throw new ConflictException({ code: "PRODUCTION_ALREADY_STARTED", message: "Bu ishlab chiqarish allaqachon boshlangan." });
       if (order.status === "COMPLETED" || order.status === "CANCELLED") throw new ConflictException({ code: "PRODUCTION_LOCKED", message: "Bu buyurtmani start qilib bo'lmaydi." });
       if (!order.bom) throw new BadRequestException({ code: "BOM_REQUIRED", message: "BOM topilmadi." });
       const warehouseId = body.warehouseId || order.warehouseId || (await this.ensureDefaultWarehouse(tenantId)).id;
+      const startedAt = new Date();
+      const claimed = await tx.productionOrder.updateMany({
+        where: { id, companyId: tenantId, status: "PLANNED" },
+        data: { status: "IN_PROGRESS", startedAt, warehouseId },
+      });
+      if (claimed.count !== 1) {
+        const current = await tx.productionOrder.findFirst({ where: { id, companyId: tenantId }, include: { bom: { include: { materials: true } }, stages: true } });
+        if (current?.status === "IN_PROGRESS") throw new ConflictException({ code: "PRODUCTION_ALREADY_STARTED", message: "Bu ishlab chiqarish allaqachon boshlangan." });
+        throw new ConflictException({ code: "PRODUCTION_STATE_CHANGED", message: "Ishlab chiqarish holati o'zgargan. Sahifani yangilang." });
+      }
       const materialProducts = await tx.product.findMany({
         where: { companyId: tenantId, id: { in: order.bom.materials.map((material) => material.productId).filter(Boolean) as string[] }, deletedAt: null },
         select: { id: true, name: true, unit: true, cost: true },
@@ -1677,7 +1690,7 @@ async createCategory(companyId: string, body: any) {
         where: { id, companyId: tenantId },
         data: {
           status: "IN_PROGRESS",
-          startedAt: new Date(),
+          startedAt,
           warehouseId,
           materialCost: roundMoney(materialCost),
           productionCost: roundMoney(materialCost + toNumber(order.overheadCost)),
@@ -1717,7 +1730,8 @@ async createCategory(companyId: string, body: any) {
         }));
       const actualInput = Array.isArray(body.actualMaterials) ? body.actualMaterials : [];
       const actualByProduct = new Map<string, any>(actualInput.filter((item: any) => item.productId).map((item: any) => [item.productId, item] as [string, any]));
-      const productIds = [...new Set([...snapshot.map((item) => item.productId), ...actualInput.map((item: any) => item.productId)].filter(Boolean))] as string[];
+      const packagingMaterialIds = packaging.flatMap((row: any) => row.materials.map((material: any) => material.productId));
+      const productIds = [...new Set([...snapshot.map((item) => item.productId), ...actualInput.map((item: any) => item.productId), ...packagingMaterialIds].filter(Boolean))] as string[];
       const products = await tx.product.findMany({ where: { companyId: tenantId, id: { in: productIds }, deletedAt: null }, select: { id: true, name: true, unit: true, cost: true } });
       const productsById = new Map(products.map((product) => [product.id, product]));
       const materialEntries: any[] = [];
@@ -1769,9 +1783,14 @@ async createCategory(companyId: string, body: any) {
       const acceptedQuantity = parseQuantity(body.acceptedQuantity ?? quality.acceptedQuantity ?? actualQuantity, "Qabul qilingan miqdor");
       const defectQuantity = parseQuantity(body.defectQuantity ?? quality.defectQuantity ?? 0, "Brak miqdori");
       const wasteQuantity = parseQuantity(body.wasteQuantity ?? quality.wasteQuantity ?? 0, "Chiqindi miqdori");
+      if (actualQuantity + defectQuantity + wasteQuantity > toNumber(order.plannedQuantity)) {
+        throw new BadRequestException({ code: "PRODUCTION_QUANTITY_EXCEEDS_PLAN", message: "Ishlab chiqarilgan, brak va chiqindi jami reja miqdoridan oshmasin." });
+      }
+      const packagingMaterialCost = packaging.reduce((total: number, row: any) => total + row.materials.reduce((rowTotal: number, material: any) => rowTotal + material.quantity * row.quantity * toNumber(productsById.get(material.productId)?.cost), 0), 0);
+      const totalMaterialCost = roundMoney(actualMaterialCost + packagingMaterialCost, 6);
       const overhead = this.normalizeOverheadItems(Array.isArray(body.overheadItems) ? body.overheadItems : order.overheadItems);
       const overheadCost = overhead.items.length ? overhead.total : roundMoney(body.overheadCost ?? order.overheadCost);
-      const actualProductionCost = roundMoney(actualMaterialCost + overheadCost, 6);
+      const actualProductionCost = roundMoney(totalMaterialCost + overheadCost, 6);
       const bulkQuantity = roundQuantity(actualQuantity - packagedTotal);
       if (bulkQuantity > 0) {
         await this.adjustStockDelta(tx, tenantId, warehouseId, order.outputProductId, bulkQuantity, {
@@ -1812,7 +1831,7 @@ async createCategory(companyId: string, body: any) {
           packaging,
           remainingBulkQuantity: bulkQuantity,
           actualMaterials: materialEntries,
-          actualMaterialCost: roundMoney(actualMaterialCost, 6),
+          actualMaterialCost: totalMaterialCost,
           actualProductionCost,
           actualUnitCost: actualQuantity > 0 ? roundMoney(actualProductionCost / actualQuantity, 6) : 0,
           overheadItems: overhead.items,
@@ -1828,7 +1847,7 @@ async createCategory(companyId: string, body: any) {
         },
         include: { bom: { include: { materials: true } }, stages: true },
       });
-      await this.writeAudit(tx, tenantId, actorUserId, "production.complete", "production_order", order.id, { producedQuantity: actualQuantity, packaging, yieldPercent, wastePercent, actualMaterialCost, actualProductionCost });
+      await this.writeAudit(tx, tenantId, actorUserId, "production.complete", "production_order", order.id, { producedQuantity: actualQuantity, packaging, yieldPercent, wastePercent, actualMaterialCost: totalMaterialCost, packagingMaterialCost, actualProductionCost });
       return this.productionOrderDto(updated);
     });
   }
@@ -2176,13 +2195,18 @@ async createCategory(companyId: string, body: any) {
     const item = await this.ensureStockItem(tx, companyId, warehouseId, productId);
     const current = toNumber(item.quantity);
     const reserved = toNumber(item.reserved);
+    const product = await tx.product.findFirst({ where: { id: productId, companyId, deletedAt: null } });
+    if (!product) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: "Mahsulot topilmadi." });
     if (delta < 0 && Math.abs(delta) > Math.max(current - reserved, 0)) {
-      throw new ConflictException({ code: "INSUFFICIENT_AVAILABLE_STOCK", message: `Sotish uchun mavjud qoldiq yetarli emas. Mavjud: ${Math.max(current - reserved, 0)}.` });
+      const message = movement.sourceType === "PRODUCTION"
+        ? `Ishlab chiqarishni boshlash uchun xomashyo yetarli emas. Mavjud: ${Math.max(current - reserved, 0)} ${product.unit}.`
+        : movement.sourceType === "PRODUCTION_PACKAGING"
+          ? `Qadoqlash materiali yetarli emas. Mavjud: ${Math.max(current - reserved, 0)} ${product.unit}.`
+          : `Sotish uchun mavjud qoldiq yetarli emas. Mavjud: ${Math.max(current - reserved, 0)} ${product.unit}.`;
+      throw new ConflictException({ code: "INSUFFICIENT_AVAILABLE_STOCK", message });
     }
     const next = roundQuantity(current + delta);
     if (next < 0) throw new ConflictException({ code: "NEGATIVE_STOCK", message: `Yetarli qoldiq yo'q. Mavjud: ${current}.` });
-    const product = await tx.product.findFirst({ where: { id: productId, companyId, deletedAt: null } });
-    if (!product) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: "Mahsulot topilmadi." });
     if (delta < 0 && product.status !== "ACTIVE") {
       throw new ConflictException({ code: "PRODUCT_INACTIVE", message: "Faol bo'lmagan mahsulot sotilmaydi." });
     }
@@ -2513,21 +2537,33 @@ async createCategory(companyId: string, body: any) {
 
   private normalizePackagingRows(input: any, unit: string) {
     const rows = Array.isArray(input) ? input : [];
-    return rows.map((row: any, index: number) => ({
-      id: row.id || `package-${index + 1}`,
-      productId: row.productId || null,
-      productName: String(row.productName || row.name || "").trim(),
-      quantity: parseQuantity(row.quantity ?? row.count ?? 0, "Qadoq soni"),
-      packSize: convertQuantity(parseQuantity(row.packSize ?? row.size ?? 0, "Qadoq hajmi"), row.packUnit || unit, unit),
-      packUnit: normalizeUnit(row.packUnit || unit),
-      materials: Array.isArray(row.materials || row.packagingMaterials) ? (row.materials || row.packagingMaterials).map((material: any) => ({ productId: material.productId, quantity: parseQuantity(material.quantity, "Qadoq materiali") })).filter((material: any) => material.productId && material.quantity > 0) : [],
-    })).filter((row: any) => row.quantity > 0 && row.packSize > 0);
+    return rows.map((row: any, index: number) => {
+      const quantity = parseQuantity(row.quantity ?? row.count ?? 0, "Qadoq soni");
+      if (!Number.isInteger(quantity) || quantity <= 0) {
+        throw new BadRequestException({ code: "PACKAGING_COUNT_INTEGER", message: "Qadoq soni butun son bo'lishi kerak." });
+      }
+      const inputPackUnit = normalizeUnit(row.packUnit || unit);
+      const normalizedPackSize = convertQuantity(parseQuantity(row.packSize ?? row.size ?? 0, "Qadoq hajmi"), inputPackUnit, unit);
+      if (normalizedPackSize <= 0) {
+        throw new BadRequestException({ code: "PACKAGING_SIZE_INVALID", message: "Qadoq hajmi 0 dan katta bo'lishi kerak." });
+      }
+      return {
+        id: row.id || `package-${index + 1}`,
+        productId: row.productId || null,
+        productName: String(row.productName || row.name || "").trim(),
+        quantity,
+        packSize: normalizedPackSize,
+        packUnit: normalizeUnit(unit),
+        materials: Array.isArray(row.materials || row.packagingMaterials) ? (row.materials || row.packagingMaterials).map((material: any) => ({ productId: material.productId, quantity: parseQuantity(material.quantity, "Qadoq materiali") })).filter((material: any) => material.productId && material.quantity > 0) : [],
+      };
+    }).filter((row: any) => row.quantity > 0 && row.packSize > 0);
   }
 
   private async ensurePackagedVariant(tx: Tx, companyId: string, parentProductId: string, parentName: string, unit: string, row: any) {
     if (row.productId) {
       const existing = await tx.product.findFirst({ where: { id: row.productId, companyId, deletedAt: null } });
       if (!existing) throw new NotFoundException({ code: "PACKAGED_PRODUCT_NOT_FOUND", message: "Qadoqlangan SKU topilmadi." });
+      if (normalizeUnit(existing.unit) !== "dona") throw new BadRequestException({ code: "PACKAGED_PRODUCT_UNIT_INVALID", message: "Qadoqlangan mahsulot birligi dona bo'lishi kerak." });
       return existing;
     }
     const name = row.productName || `${parentName} ${row.packSize} ${unit}`;
@@ -2899,16 +2935,29 @@ async createCategory(companyId: string, body: any) {
       stages: order.stages?.map((stage: any) => ({ ...stage, status: stage.status === "PLANNED" ? "PENDING" : stage.status })) || [],
       productId: order.outputProductId,
       productName: order.outputProductName,
-      requiredMaterials: order.bom?.materials?.map((material: any) => ({
-        id: material.id,
-        productId: material.productId,
-        productName: material.productName,
-        quantity: decimalToNumber(material.quantity),
-        bomQuantity: decimalToNumber(material.quantity),
-        requiredQuantity: decimalToNumber(material.quantity) * decimalToNumber(order.plannedQuantity) / Math.max(decimalToNumber(order.bom.outputQuantity), 1),
-        unit: material.unit,
-        cost: decimalToNumber(material.cost),
-      })) || [],
+      requiredMaterials: (Array.isArray(order.materialSnapshot) && order.materialSnapshot.length
+        ? order.materialSnapshot.map((material: any, index: number) => ({
+          id: material.recipeMaterialId || material.productId || `material-${index + 1}`,
+          productId: material.productId,
+          productName: material.productName,
+          quantity: decimalToNumber(material.plannedQuantity),
+          bomQuantity: decimalToNumber(material.bomQuantity ?? material.plannedQuantity),
+          requiredQuantity: decimalToNumber(material.plannedQuantity),
+          unit: normalizeUnit(material.unit),
+          cost: decimalToNumber(material.cost),
+          totalCost: decimalToNumber(material.plannedQuantity) * decimalToNumber(material.cost),
+        }))
+        : order.bom?.materials?.map((material: any) => ({
+          id: material.id,
+          productId: material.productId,
+          productName: material.productName,
+          quantity: decimalToNumber(material.quantity),
+          bomQuantity: decimalToNumber(material.quantity),
+          requiredQuantity: decimalToNumber(material.quantity) * decimalToNumber(order.plannedQuantity) / Math.max(decimalToNumber(order.bom.outputQuantity), 1),
+          unit: normalizeUnit(material.unit),
+          cost: decimalToNumber(material.cost),
+          totalCost: decimalToNumber(material.quantity) * decimalToNumber(material.cost),
+        })) || []),
       bom: order.bom ? this.bomDto(order.bom) : null,
     };
   }
