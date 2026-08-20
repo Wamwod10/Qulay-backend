@@ -206,7 +206,7 @@ describe("health, auth and error boundaries", () => {
 
     await prisma.user.update({ where: { id: fixture.user.id }, data: { status: "BLOCKED" } });
     const blockedMe = await api("/auth/me", { token, companyId: fixture.company.id });
-    assert.equal(blockedMe.status, 401);
+    assert.equal(blockedMe.status, 403);
     assert.equal(blockedMe.body.code, "ACCOUNT_BLOCKED");
   });
 
@@ -284,7 +284,7 @@ describe("super admin and module access", () => {
       body: { identifier: superAdmin.user.email, password },
       headers: { "x-forwarded-for": `10.24.0.${++requestCounter}` },
     });
-    assert.equal(blockedLogin.status, 401);
+    assert.equal(blockedLogin.status, 403);
     assert.equal(blockedLogin.body.code, "ACCOUNT_BLOCKED");
   });
 
@@ -313,7 +313,7 @@ describe("super admin and module access", () => {
     const blocked = await api(`/superadmin/users/${owner.user.id}/status`, { method: "PATCH", token: superToken, body: { status: "BLOCKED" } });
     assert.equal(blocked.status, 200);
     const blockedTokenResult = await api("/auth/me", { token: ownerToken, companyId: owner.company.id });
-    assert.equal(blockedTokenResult.status, 401);
+    assert.equal(blockedTokenResult.status, 403);
     const unblocked = await api(`/superadmin/users/${owner.user.id}/status`, { method: "PATCH", token: superToken, body: { status: "ACTIVE" } });
     assert.equal(unblocked.status, 200);
 

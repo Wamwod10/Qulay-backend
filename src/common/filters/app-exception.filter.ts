@@ -5,6 +5,8 @@ type ErrorBody = {
   code?: string;
   message?: string | string[];
   error?: string;
+  field?: string;
+  details?: unknown;
 };
 
 const sanitizeLogMessage = (value: string) => value
@@ -30,14 +32,25 @@ export class AppExceptionFilter implements ExceptionFilter {
         P2025: { code: "NOT_FOUND", message: "Ma'lumot topilmadi.", status: 404 },
         P2028: { code: "DATABASE_TRANSACTION_FAILED", message: "Amal yakunlanmadi. Qayta urinib ko'ring.", status: 409 },
       };
+<<<<<<< HEAD
       const mapped = codeMap[exception.code] || { code: "DATABASE_OPERATION_FAILED", message: "Ma'lumotlar bazasi amali bajarilmadi.", status: 409 };
       const status = mapped.status;
+=======
+      const mapped = codeMap[exception.code] || { code: "DATABASE_OPERATION_FAILED", message: "Amalni bajarib bo'lmadi. Qayta urinib ko'ring.", status: 500 };
+      const status = mapped.status;
+      this.logger.error(`database.request_failed code=${exception.code} path=${path} meta=${sanitizeLogMessage(JSON.stringify(exception.meta || {}))}`);
+      const target = Array.isArray(exception.meta?.target) ? exception.meta.target[0] : undefined;
+>>>>>>> beb45cc1 (final)
       response.status(status).json({
         statusCode: status,
         code: mapped.code,
         message: mapped.message,
+<<<<<<< HEAD
         path,
         timestamp: new Date().toISOString(),
+=======
+        ...(target ? { field: target } : {}),
+>>>>>>> beb45cc1 (final)
       });
       return;
     }
@@ -46,12 +59,13 @@ export class AppExceptionFilter implements ExceptionFilter {
       const status = exception.getStatus();
       const payload = exception.getResponse();
       const body = typeof payload === "object" && payload !== null ? payload as ErrorBody : undefined;
+      const message = typeof payload === "string" ? payload : body?.message || exception.message;
       response.status(status).json({
         statusCode: status,
         code: body?.code || body?.error || exception.name,
-        message: typeof payload === "string" ? payload : body?.message || exception.message,
-        path,
-        timestamp: new Date().toISOString(),
+        message,
+        ...(body?.field ? { field: body.field } : {}),
+        ...(body?.details ? { details: body.details } : {}),
       });
       return;
     }
@@ -60,9 +74,7 @@ export class AppExceptionFilter implements ExceptionFilter {
     response.status(500).json({
       statusCode: 500,
       code: "INTERNAL_SERVER_ERROR",
-      message: "Ichki server xatosi.",
-      path,
-      timestamp: new Date().toISOString(),
+      message: "Amalni bajarib bo'lmadi. Qayta urinib ko'ring.",
     });
   }
 }

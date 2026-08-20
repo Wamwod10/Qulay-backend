@@ -353,11 +353,22 @@ export class BusinessService {
     const name = String(body.name || "").trim();
     if (!name) throw new BadRequestException({ code: "CATEGORY_NAME_REQUIRED", message: "Kategoriya nomini kiriting." });
     const tenantId = this.requireCompany(companyId);
+<<<<<<< HEAD
     return this.prisma.category.upsert({
       where: { companyId_name: { companyId: tenantId, name } },
       update: { status: "ACTIVE" },
       create: { companyId: tenantId, name },
     });
+=======
+    const existing = await this.prisma.category.findFirst({
+      where: { companyId: tenantId, name: { equals: name, mode: "insensitive" } },
+    });
+    if (existing) {
+      return this.prisma.category.update({ where: { id: existing.id }, data: { status: "ACTIVE" } });
+    }
+
+    return this.prisma.category.create({ data: { companyId: tenantId, name, status: "ACTIVE" } });
+>>>>>>> beb45cc1 (final)
   }
 
   async listStock(companyId: string, query: Record<string, string | undefined>) {
@@ -562,7 +573,7 @@ export class BusinessService {
       include: { purchases: { orderBy: { createdAt: "desc" }, take: 20 }, products: true },
     });
 
-    if (!supplier) throw new NotFoundException({ code: "SUPPLIER_NOT_FOUND", message: "Supplier topilmadi." });
+    if (!supplier) throw new NotFoundException({ code: "SUPPLIER_NOT_FOUND", message: "Yetkazib beruvchi topilmadi." });
 
     return {
       ...this.supplierDto(supplier),
@@ -572,10 +583,17 @@ export class BusinessService {
   }
 
   async createSupplier(companyId: string, body: any) {
+    const tenantId = this.requireCompany(companyId);
+    const name = String(body.name || body.companyName || "").trim();
+    if (!name) throw new BadRequestException({ code: "SUPPLIER_NAME_REQUIRED", message: "Yetkazib beruvchi nomini kiriting.", field: "name" });
+    const existing = await this.prisma.supplier.findFirst({
+      where: { companyId: tenantId, deletedAt: null, name: { equals: name, mode: "insensitive" } },
+    });
+    if (existing) throw new ConflictException({ code: "SUPPLIER_EXISTS", message: "Bu qiymat allaqachon mavjud.", field: "name" });
     const supplier = await this.prisma.supplier.create({
       data: {
-        companyId: this.requireCompany(companyId),
-        name: body.name || body.companyName || "Nomsiz supplier",
+        companyId: tenantId,
+        name,
         companyName: body.companyName,
         contactPerson: body.contactPerson,
         phone: body.phone,
@@ -1261,6 +1279,8 @@ export class BusinessService {
 
   async createCustomer(companyId: string, body: any) {
     const tenantId = this.requireCompany(companyId);
+    const name = String(body.name || body.fullName || body.companyName || "").trim();
+    if (!name) throw new BadRequestException({ code: "CUSTOMER_NAME_REQUIRED", message: "Mijoz nomini kiriting.", field: "name" });
     if (body.agentId) {
       const agent = await this.prisma.agent.findFirst({ where: { id: body.agentId, companyId: tenantId, deletedAt: null } });
       if (!agent) throw new NotFoundException({ code: "AGENT_NOT_FOUND", message: "Agent topilmadi." });
@@ -1268,7 +1288,7 @@ export class BusinessService {
     const customer = await this.prisma.customer.create({
       data: {
         companyId: tenantId,
-        name: body.name || body.fullName || body.companyName || "Nomsiz mijoz",
+        name,
         fullName: body.fullName,
         companyName: body.companyName,
         contactPerson: body.contactPerson,
@@ -1396,10 +1416,13 @@ export class BusinessService {
   }
 
   async createAgent(companyId: string, body: any) {
+    const tenantId = this.requireCompany(companyId);
+    const name = String(body.name || body.fullName || "").trim();
+    if (!name) throw new BadRequestException({ code: "AGENT_NAME_REQUIRED", message: "Agent nomini kiriting.", field: "name" });
     const agent = await this.prisma.agent.create({
       data: {
-        companyId: this.requireCompany(companyId),
-        name: body.name || body.fullName || "Nomsiz agent",
+        companyId: tenantId,
+        name,
         phone: body.phone,
         email: body.email,
         targetAmount: toNumber(body.targetAmount || body.target),
@@ -2250,10 +2273,24 @@ export class BusinessService {
   private async ensureCategory(tx: Tx, companyId: string, value: unknown) {
     const raw = String(value || "").trim();
     if (!raw) return null;
+<<<<<<< HEAD
     if (raw.startsWith("cat-")) return null;
     const existing = await tx.category.findFirst({ where: { companyId, OR: [{ id: raw }, { name: raw }] } });
     if (existing) return existing.id;
     const category = await tx.category.create({ data: { companyId, name: raw } });
+=======
+    const existing = await tx.category.findFirst({
+      where: {
+        companyId,
+        OR: [
+          { id: raw },
+          { name: { equals: raw, mode: "insensitive" } },
+        ],
+      },
+    });
+    if (existing) return existing.id;
+    const category = await tx.category.create({ data: { companyId, name: raw, status: "ACTIVE" } });
+>>>>>>> beb45cc1 (final)
     return category.id;
   }
 
@@ -2300,7 +2337,13 @@ export class BusinessService {
 
     for (const [code, id, find] of references) {
       if (id && !(await find())) {
-        throw new NotFoundException({ code, message: "Finance bog'langan ma'lumotni topmadi." });
+        const messages: Record<string, string> = {
+          CUSTOMER_NOT_FOUND: "Mijoz topilmadi.",
+          SUPPLIER_NOT_FOUND: "Yetkazib beruvchi topilmadi.",
+          AGENT_NOT_FOUND: "Agent topilmadi.",
+          EMPLOYEE_NOT_FOUND: "Xodim topilmadi.",
+        };
+        throw new NotFoundException({ code, message: messages[code] || "Bog'langan ma'lumot topilmadi." });
       }
     }
   }

@@ -3,6 +3,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req } from "@
 import { CurrentCompany } from "../../common/decorators/current-company.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { RequireModules } from "../../common/decorators/modules.decorator";
+import { AllowInlineCreateFrom } from "../../common/decorators/inline-create.decorator";
 import { BusinessService } from "./business.service";
 
 @Controller("context")
@@ -31,6 +32,7 @@ export class ProductsController {
   }
 
   @Post()
+  @AllowInlineCreateFrom("purchases", "manufacturing")
   create(@CurrentCompany() companyId: string, @Body() body: any) {
     return this.service.createProduct(companyId, body);
   }
@@ -82,6 +84,10 @@ export class CategoriesController {
   }
 
   @Post()
+<<<<<<< HEAD
+=======
+  @AllowInlineCreateFrom("products")
+>>>>>>> beb45cc1 (final)
   create(@CurrentCompany() companyId: string, @Body() body: any) {
     return this.service.createCategory(companyId, body);
   }
@@ -175,6 +181,7 @@ export class SuppliersController {
   }
 
   @Post()
+  @AllowInlineCreateFrom("purchases", "products", "finance")
   create(@CurrentCompany() companyId: string, @Body() body: any) {
     return this.service.createSupplier(companyId, body);
   }
@@ -283,6 +290,7 @@ export class CustomersController {
   }
 
   @Post()
+  @AllowInlineCreateFrom("sales", "finance")
   create(@CurrentCompany() companyId: string, @Body() body: any) {
     return this.service.createCustomer(companyId, body);
   }
@@ -319,6 +327,7 @@ export class AgentsController {
   }
 
   @Post()
+  @AllowInlineCreateFrom("sales", "finance")
   create(@CurrentCompany() companyId: string, @Body() body: any) {
     return this.service.createAgent(companyId, body);
   }

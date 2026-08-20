@@ -1,4 +1,4 @@
-import { CanActivate, ExecutionContext, Injectable, Logger, UnauthorizedException } from "@nestjs/common";
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable, Logger, UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Reflector } from "@nestjs/core";
 import { JwtService } from "@nestjs/jwt";
@@ -65,7 +65,7 @@ export class JwtAuthGuard implements CanActivate {
 
     if (!user || user.status !== "ACTIVE" || user.deletedAt) {
       this.logger.warn("auth.request_rejected reason=inactive_account");
-      throw new UnauthorizedException({
+      throw new ForbiddenException({
         code: "ACCOUNT_BLOCKED",
         message: "Foydalanuvchi faol emas.",
       });
@@ -82,7 +82,7 @@ export class JwtAuthGuard implements CanActivate {
 
     if (user.role !== SUPER_ADMIN_ROLE) {
       if (!membership) {
-        throw new UnauthorizedException({
+        throw new ForbiddenException({
           code: "TENANT_REQUIRED",
           message: "Kompaniya access topilmadi.",
         });
@@ -90,7 +90,7 @@ export class JwtAuthGuard implements CanActivate {
 
       if (membership.company.status !== "ACTIVE" || membership.company.deletedAt) {
         this.logger.warn("auth.request_rejected reason=inactive_company");
-        throw new UnauthorizedException({
+        throw new ForbiddenException({
           code: "COMPANY_BLOCKED",
           message: "Kompaniya bloklangan.",
         });

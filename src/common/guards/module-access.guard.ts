@@ -2,6 +2,7 @@ import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from "@
 import { Reflector } from "@nestjs/core";
 
 import { MODULES_KEY } from "../decorators/modules.decorator";
+import { INLINE_CREATE_MODULES_KEY } from "../decorators/inline-create.decorator";
 import { PrismaService } from "../../database/prisma.service";
 import { SUPER_ADMIN_ROLE } from "../constants/user-role.constants";
 
@@ -35,27 +36,37 @@ export class ModuleAccessGuard implements CanActivate {
       throw new ForbiddenException({ code: "TENANT_REQUIRED", message: "Kompaniya tanlanmagan." });
     }
 
-    const modules = await this.prisma.platformModule.findMany({
-      where: { key: { in: moduleKeys } },
-      include: {
-        companyAccess: {
-          where: { companyId },
-        },
-      },
-    });
+    const isEnabled = async (keys: string[]) => {
+      const modules = await this.prisma.platformModule.findMany({
+        where: { key: { in: keys } },
+        include: { companyAccess: { where: { companyId } } },
+      });
 
-    const allowed = moduleKeys.every((moduleKey) => {
-      const module = modules.find((item) => item.key === moduleKey);
-      const companyAccess = module?.companyAccess[0];
+      return keys.every((moduleKey) => {
+        const module = modules.find((item) => item.key === moduleKey);
+        const companyAccess = module?.companyAccess[0];
+        // A missing platform module or account override is not an implicit grant.
+        return Boolean(module?.enabled && companyAccess?.enabled);
+      });
+    };
 
-      // A missing platform module or account override is not an implicit grant.
-      // Account access is provisioned during authentication; denying here keeps
-      // a race/partial migration from opening a disabled module.
-      return Boolean(module?.enabled && companyAccess?.enabled);
-    });
+    let allowed = await isEnabled(moduleKeys);
+
+    if (!allowed && request.method === "POST") {
+      const inlineModules = this.reflector.getAllAndOverride<string[]>(INLINE_CREATE_MODULES_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ]) || [];
+      const requestedParent = String(request.headers["x-inline-parent-module"] || "").trim();
+
+      // Inline creation can use the parent workflow only when the route
+      // explicitly opted in and that parent is enabled for this company.
+      allowed = Boolean(requestedParent && inlineModules.includes(requestedParent))
+        && await isEnabled([requestedParent]);
+    }
 
     if (!allowed) {
-      throw new ForbiddenException({ code: "MODULE_DISABLED", message: "Bo'lim o'chirilgan." });
+      throw new ForbiddenException({ code: "MODULE_DISABLED", message: "Bu bo'lim hozircha o'chirilgan." });
     }
 
     return true;

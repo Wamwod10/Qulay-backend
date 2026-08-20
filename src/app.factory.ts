@@ -33,7 +33,7 @@ export async function createConfiguredApp(): Promise<INestApplication> {
       callback(null, false);
     },
     credentials: true,
-    allowedHeaders: ["Content-Type", "Authorization", "X-Company-Id", "X-Branch-Id", "X-Warehouse-Id", "Idempotency-Key"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Company-Id", "X-Branch-Id", "X-Warehouse-Id", "Idempotency-Key", "X-Inline-Parent-Module"],
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
   });
   app.useGlobalPipes(AppValidationPipe);

@@ -155,14 +155,14 @@ export class AuthService {
 
     if (user.status !== "ACTIVE") {
       this.logger.warn("auth.login_blocked reason=inactive_account");
-      throw new UnauthorizedException({ code: "ACCOUNT_BLOCKED", message: "Foydalanuvchi bloklangan." });
+      throw new ForbiddenException({ code: "ACCOUNT_BLOCKED", message: "Foydalanuvchi bloklangan." });
     }
 
     const company = user.memberships[0]?.company || null;
 
     if (user.role !== SUPER_ADMIN_ROLE && (!company || company.status !== "ACTIVE" || company.deletedAt)) {
       this.logger.warn("auth.login_blocked reason=inactive_company");
-      throw new UnauthorizedException({ code: "COMPANY_BLOCKED", message: "Kompaniya bloklangan." });
+      throw new ForbiddenException({ code: "COMPANY_BLOCKED", message: "Kompaniya bloklangan." });
     }
 
     await this.prisma.user.update({
