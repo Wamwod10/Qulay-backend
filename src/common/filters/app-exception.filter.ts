@@ -84,21 +84,14 @@ export class AppExceptionFilter implements ExceptionFilter {
         )}`,
       );
 
-      const targetFields = Array.isArray(exception.meta?.target)
-        ? exception.meta.target.map(String)
-        : [];
-      const target = targetFields.find((field) => /sku|barcode|email|phone|name/i.test(field));
-      const duplicateMessage =
-        exception.code === "P2002" && target === "sku"
-          ? "Bu SKU boshqa mahsulotda mavjud."
-          : exception.code === "P2002" && target === "barcode"
-            ? "Bu shtrix-kod boshqa mahsulotda mavjud."
-            : mapped.message;
+      const target = Array.isArray(exception.meta?.target)
+        ? exception.meta.target[0]
+        : undefined;
 
       response.status(status).json({
         statusCode: status,
         code: mapped.code,
-        message: duplicateMessage,
+        message: mapped.message,
         ...(target ? { field: target } : {}),
         path,
         timestamp: new Date().toISOString(),

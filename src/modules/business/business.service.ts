@@ -131,7 +131,7 @@ export class BusinessService {
           companyId: tenantId,
           name,
           sku,
-          barcode,
+          barcode: body.barcode || null,
           type: body.type || null,
           category: body.category || null,
           categoryId: await this.ensureCategory(tx, tenantId, body.categoryId || body.category),
@@ -157,20 +157,23 @@ export class BusinessService {
         },
       });
 
-      if (stock > 0 && warehouse) {
-        await this.adjustStockDelta(tx, tenantId, warehouse.id, product.id, stock, {
-          type: "IN",
-          reason: "OPENING_STOCK",
-          sourceType: "PRODUCT",
-          sourceId: product.id,
-          cost: product.cost,
-        });
-      }
+        if (stock > 0 && warehouse) {
+          await this.adjustStockDelta(tx, tenantId, warehouse.id, product.id, stock, {
+            type: "IN",
+            reason: "OPENING_STOCK",
+            sourceType: "PRODUCT",
+            sourceId: product.id,
+            cost: product.cost,
+          });
+        }
 
-      if (stock > 0 && warehouse) await this.refreshProductStock(tx, tenantId, product.id);
+        if (stock > 0 && warehouse) await this.refreshProductStock(tx, tenantId, product.id);
 
-      return this.productDto({ ...product, stock: warehouse ? stock : 0 });
-    });
+        return this.productDto({ ...product, stock: warehouse ? stock : 0 });
+      });
+    } catch (error) {
+      this.throwProductUniqueConflict(error);
+    }
   }
 
   async updateProduct(companyId: string, id: string, body: any, actorUserId?: string) {
@@ -264,20 +267,8 @@ export class BusinessService {
         isVariant: body.isVariant,
         supplierId: body.supplierId,
         status: body.status,
-        },
-      });
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-        const target = Array.isArray(error.meta?.target) ? error.meta.target.map(String) : [String(error.meta?.target || "")];
-        if (target.some((field) => field.includes("sku"))) {
-          throw new ConflictException({ code: "SKU_DUPLICATE", field: "sku", message: "Bu SKU boshqa mahsulotda mavjud." });
-        }
-        if (target.some((field) => field.includes("barcode"))) {
-          throw new ConflictException({ code: "BARCODE_DUPLICATE", field: "barcode", message: "Bu shtrix-kod boshqa mahsulotda mavjud." });
-        }
-      }
-      throw error;
-    }
+      },
+    });
     if (body.cost !== undefined || body.salePrice !== undefined) {
       await this.writeAudit(this.prisma, tenantId, actorUserId, "product.price_change", "product", id, { before: { cost: currentProduct.cost, salePrice: currentProduct.salePrice }, after: { cost: body.cost, salePrice: body.salePrice } });
     }
@@ -2411,17 +2402,51 @@ async createCategory(companyId: string, body: any) {
 }
 
   private async ensureProduct(tx: Tx, companyId: string, productId: string | undefined, productName: unknown, type: string, unit: unknown) {
-    if (productId) {
-      const existing = await tx.product.findFirst({ where: { id: productId, companyId, deletedAt: null } });
-      if (!existing) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: "Mahsulot topilmadi." });
-      return existing;
+    if (!productId) {
+      throw new BadRequestException({
+        code: "PRODUCT_ID_REQUIRED",
+        field: type === "RAW_MATERIAL" ? "productId" : "outputProductId",
+        message: "Retseptda mahsulotni ro'yxatdan tanlang. Yangi mahsulotni avval to'liq forma orqali yarating.",
+      });
     }
-    const name = String(productName || "").trim();
-    if (!name) throw new BadRequestException({ code: "PRODUCT_NAME_REQUIRED", message: "Mahsulot nomini kiriting." });
-    const sku = String(1000 + (await tx.product.count({ where: { companyId } })) + 1);
-    return tx.product.create({
-      data: { companyId, name, sku, type, unit: normalizeUnit(unit), stock: 0 },
-    });
+
+    const existing = await tx.product.findFirst({ where: { id: productId, companyId, deletedAt: null } });
+    if (!existing) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: "Mahsulot topilmadi." });
+
+    const compatibleTypes = type === "RAW_MATERIAL"
+      ? ["RAW_MATERIAL", "SEMI_FINISHED"]
+      : ["FINISHED_GOOD", "SEMI_FINISHED"];
+    if (existing.type && !compatibleTypes.includes(existing.type)) {
+      throw new BadRequestException({
+        code: "PRODUCT_TYPE_INVALID",
+        field: type === "RAW_MATERIAL" ? "productId" : "outputProductId",
+        message: type === "RAW_MATERIAL"
+          ? "Retsept xomashyosi RAW_MATERIAL yoki SEMI_FINISHED bo'lishi kerak."
+          : "Retsept natijasi FINISHED_GOOD yoki SEMI_FINISHED bo'lishi kerak.",
+      });
+    }
+
+    // Product.unit is the source of truth. The recipe/purchase unit is kept on
+    // BomMaterial/PurchaseItem and is normalized by their respective helpers.
+    void productName;
+    void unit;
+    return existing;
+  }
+
+  private throwProductUniqueConflict(error: unknown): never {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const target = Array.isArray(error.meta?.target)
+        ? error.meta.target.map(String).join(" ")
+        : String(error.meta?.target || "");
+      const field = /barcode/i.test(target) ? "barcode" : /sku/i.test(target) ? "sku" : null;
+      if (field === "sku") {
+        throw new ConflictException({ code: "SKU_DUPLICATE", field, message: "Bu SKU boshqa mahsulotda mavjud." });
+      }
+      if (field === "barcode") {
+        throw new ConflictException({ code: "BARCODE_DUPLICATE", field, message: "Bu shtrix-kod boshqa mahsulotda mavjud." });
+      }
+    }
+    throw error;
   }
 
   private async requireWarehouse(client: Tx | PrismaService, companyId: string, warehouseId: string) {
