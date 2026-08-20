@@ -125,55 +125,96 @@ export class BusinessService {
       if (!supplier) throw new NotFoundException({ code: "SUPPLIER_NOT_FOUND", message: "Yetkazib beruvchi topilmadi." });
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      const product = await tx.product.create({
-        data: {
-          companyId: tenantId,
-          name,
-          sku,
-          barcode: body.barcode || null,
-          type: body.type || null,
-          category: body.category || null,
-          categoryId: await this.ensureCategory(tx, tenantId, body.categoryId || body.category),
-          brand: body.brand || null,
-          unit: normalizeUnit(body.unit),
-          stock: 0,
-          minimumStock: body.minimumStock === undefined || body.minimumStock === "" ? 0 : parseQuantity(body.minimumStock, "Minimal qoldiq"),
-          reorderPoint: body.reorderPoint === undefined || body.reorderPoint === "" ? 0 : parseQuantity(body.reorderPoint, "Qayta buyurtma nuqtasi"),
-          cost: roundMoney(body.cost),
-          salePrice: body.salePrice === null || body.salePrice === "" || body.salePrice === undefined ? null : roundMoney(body.salePrice),
-          tax: roundMoney(body.tax),
-          discount: roundMoney(body.discount),
-          image: body.image || null,
-          notes: body.notes || null,
-          expiryDate: body.expiryDate ? parseOptionalDate(body.expiryDate) : null,
-          normalWastePercent: body.normalWastePercent === undefined || body.normalWastePercent === "" ? null : toNumber(body.normalWastePercent),
-          parentProductId: body.parentProductId || null,
-          packSize: body.packSize === undefined || body.packSize === "" ? null : parseQuantity(body.packSize, "Qadoq hajmi"),
-          packUnit: body.packUnit || null,
-          isVariant: Boolean(body.isVariant || body.parentProductId),
-          supplierId: body.supplierId || null,
-          status: body.status || "ACTIVE",
+    try {
+  return await this.prisma.$transaction(async (tx) => {
+    const product = await tx.product.create({
+      data: {
+        companyId: tenantId,
+        name,
+        sku,
+        barcode,
+        type: body.type || null,
+        category: body.category || null,
+        categoryId: await this.ensureCategory(
+          tx,
+          tenantId,
+          body.categoryId || body.category,
+        ),
+        brand: body.brand || null,
+        unit: normalizeUnit(body.unit),
+        stock: 0,
+        minimumStock:
+          body.minimumStock === undefined || body.minimumStock === ""
+            ? 0
+            : parseQuantity(body.minimumStock, "Minimal qoldiq"),
+        reorderPoint:
+          body.reorderPoint === undefined || body.reorderPoint === ""
+            ? 0
+            : parseQuantity(body.reorderPoint, "Qayta buyurtma nuqtasi"),
+        cost: roundMoney(body.cost),
+        salePrice:
+          body.salePrice === null ||
+          body.salePrice === "" ||
+          body.salePrice === undefined
+            ? null
+            : roundMoney(body.salePrice),
+        tax: roundMoney(body.tax),
+        discount: roundMoney(body.discount),
+        image: body.image || null,
+        notes: body.notes || null,
+        expiryDate: body.expiryDate
+          ? parseOptionalDate(body.expiryDate)
+          : null,
+        normalWastePercent:
+          body.normalWastePercent === undefined ||
+          body.normalWastePercent === ""
+            ? null
+            : toNumber(body.normalWastePercent),
+        parentProductId: body.parentProductId || null,
+        packSize:
+          body.packSize === undefined || body.packSize === ""
+            ? null
+            : parseQuantity(body.packSize, "Qadoq hajmi"),
+        packUnit: body.packUnit || null,
+        isVariant: Boolean(body.isVariant || body.parentProductId),
+        supplierId: body.supplierId || null,
+        status: body.status || "ACTIVE",
+      },
+    });
+
+    if (stock > 0 && warehouse) {
+      await this.adjustStockDelta(
+        tx,
+        tenantId,
+        warehouse.id,
+        product.id,
+        stock,
+        {
+          type: "IN",
+          reason: "OPENING_STOCK",
+          sourceType: "PRODUCT",
+          sourceId: product.id,
+          cost: product.cost,
         },
-      });
-
-        if (stock > 0 && warehouse) {
-          await this.adjustStockDelta(tx, tenantId, warehouse.id, product.id, stock, {
-            type: "IN",
-            reason: "OPENING_STOCK",
-            sourceType: "PRODUCT",
-            sourceId: product.id,
-            cost: product.cost,
-          });
-        }
-
-        if (stock > 0 && warehouse) await this.refreshProductStock(tx, tenantId, product.id);
-
-        return this.productDto({ ...product, stock: warehouse ? stock : 0 });
-      });
-    } catch (error) {
-      this.throwProductUniqueConflict(error);
+      );
     }
+
+    if (stock > 0 && warehouse) {
+      await this.refreshProductStock(
+        tx,
+        tenantId,
+        product.id,
+      );
+    }
+
+    return this.productDto({
+      ...product,
+      stock: warehouse ? stock : 0,
+    });
+  });
+} catch (error) {
+  this.throwProductUniqueConflict(error);
+}
   }
 
   async updateProduct(companyId: string, id: string, body: any, actorUserId?: string) {
@@ -238,47 +279,141 @@ export class BusinessService {
       if (!supplier) throw new NotFoundException({ code: "SUPPLIER_NOT_FOUND", message: "Yetkazib beruvchi topilmadi." });
     }
 
-    let updated;
-    try {
-      updated = await this.prisma.product.update({
-        where: { id, companyId: tenantId },
-        data: {
-        name: body.name,
-        sku: body.sku === undefined ? undefined : nextSku,
-        barcode: body.barcode === undefined ? undefined : nextBarcode,
-        type: body.type,
-        category: categoryName,
-        categoryId,
-        brand: body.brand,
-        unit: body.unit === undefined ? undefined : nextUnit,
-        minimumStock: body.minimumStock === undefined ? undefined : body.minimumStock === null || body.minimumStock === "" ? 0 : parseQuantity(body.minimumStock, "Minimal qoldiq"),
-        reorderPoint: body.reorderPoint === undefined ? undefined : body.reorderPoint === null || body.reorderPoint === "" ? 0 : parseQuantity(body.reorderPoint, "Qayta buyurtma nuqtasi"),
-        cost: body.cost === undefined ? undefined : roundMoney(body.cost),
-        salePrice: body.salePrice === undefined ? undefined : body.salePrice === null || body.salePrice === "" ? null : roundMoney(body.salePrice),
-        tax: body.tax === undefined ? undefined : roundMoney(body.tax),
-        discount: body.discount === undefined ? undefined : roundMoney(body.discount),
-        image: body.image,
-        notes: body.notes,
-        expiryDate: body.expiryDate === undefined ? undefined : body.expiryDate ? parseOptionalDate(body.expiryDate) : null,
-        normalWastePercent: body.normalWastePercent === undefined ? undefined : body.normalWastePercent === null || body.normalWastePercent === "" ? null : toNumber(body.normalWastePercent),
-        parentProductId: body.parentProductId,
-        packSize: body.packSize === undefined ? undefined : body.packSize === null || body.packSize === "" ? null : parseQuantity(body.packSize, "Qadoq hajmi"),
-        packUnit: body.packUnit,
-        isVariant: body.isVariant,
-        supplierId: body.supplierId,
-        status: body.status,
+let updated;
+
+try {
+  updated = await this.prisma.product.update({
+    where: {
+      id,
+      companyId: tenantId,
+    },
+    data: {
+      name: body.name,
+      sku: body.sku === undefined ? undefined : nextSku,
+      barcode: body.barcode === undefined ? undefined : nextBarcode,
+      type: body.type,
+      category: categoryName,
+      categoryId,
+      brand: body.brand,
+      unit: body.unit === undefined ? undefined : nextUnit,
+
+      minimumStock:
+        body.minimumStock === undefined
+          ? undefined
+          : body.minimumStock === null || body.minimumStock === ""
+            ? 0
+            : parseQuantity(body.minimumStock, "Minimal qoldiq"),
+
+      reorderPoint:
+        body.reorderPoint === undefined
+          ? undefined
+          : body.reorderPoint === null || body.reorderPoint === ""
+            ? 0
+            : parseQuantity(
+                body.reorderPoint,
+                "Qayta buyurtma nuqtasi",
+              ),
+
+      cost:
+        body.cost === undefined
+          ? undefined
+          : roundMoney(body.cost),
+
+      salePrice:
+        body.salePrice === undefined
+          ? undefined
+          : body.salePrice === null || body.salePrice === ""
+            ? null
+            : roundMoney(body.salePrice),
+
+      tax:
+        body.tax === undefined
+          ? undefined
+          : roundMoney(body.tax),
+
+      discount:
+        body.discount === undefined
+          ? undefined
+          : roundMoney(body.discount),
+
+      image: body.image,
+      notes: body.notes,
+
+      expiryDate:
+        body.expiryDate === undefined
+          ? undefined
+          : body.expiryDate
+            ? parseOptionalDate(body.expiryDate)
+            : null,
+
+      normalWastePercent:
+        body.normalWastePercent === undefined
+          ? undefined
+          : body.normalWastePercent === null ||
+              body.normalWastePercent === ""
+            ? null
+            : toNumber(body.normalWastePercent),
+
+      parentProductId: body.parentProductId,
+
+      packSize:
+        body.packSize === undefined
+          ? undefined
+          : body.packSize === null || body.packSize === ""
+            ? null
+            : parseQuantity(body.packSize, "Qadoq hajmi"),
+
+      packUnit: body.packUnit,
+      isVariant: body.isVariant,
+      supplierId: body.supplierId,
+      status: body.status,
+    },
+  });
+} catch (error) {
+  this.throwProductUniqueConflict(error);
+}
+
+if (body.cost !== undefined || body.salePrice !== undefined) {
+  await this.writeAudit(
+    this.prisma,
+    tenantId,
+    actorUserId,
+    "product.price_change",
+    "product",
+    id,
+    {
+      before: {
+        cost: currentProduct.cost,
+        salePrice: currentProduct.salePrice,
       },
-    });
-    if (body.cost !== undefined || body.salePrice !== undefined) {
-      await this.writeAudit(this.prisma, tenantId, actorUserId, "product.price_change", "product", id, { before: { cost: currentProduct.cost, salePrice: currentProduct.salePrice }, after: { cost: body.cost, salePrice: body.salePrice } });
-    }
+      after: {
+        cost: body.cost,
+        salePrice: body.salePrice,
+      },
+    },
+  );
+}
 
     return this.productDto(updated);
   }
 
-  async changeProductStatus(companyId: string, id: string, status: "ACTIVE" | "INACTIVE" | "ARCHIVED") {
-    await this.getProduct(companyId, id);
-    const updated = await this.prisma.product.update({ where: { id, companyId: this.requireCompany(companyId) }, data: { status } });
+  async changeProductStatus(companyId: string, id: string, status: string) {
+    const tenantId = this.requireCompany(companyId);
+    const nextStatus = String(status || "").toUpperCase();
+    if (!["ACTIVE", "INACTIVE", "ARCHIVED"].includes(nextStatus)) {
+      throw new BadRequestException({ code: "PRODUCT_STATUS_INVALID", message: "Mahsulot statusi noto'g'ri." });
+    }
+
+    const product = await this.prisma.product.findFirst({ where: { id, companyId: tenantId } });
+    if (!product) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: "Mahsulot topilmadi." });
+
+    const updated = await this.prisma.product.update({
+      where: { id, companyId: tenantId },
+      data: {
+        status: nextStatus as any,
+        deletedAt: nextStatus === "ARCHIVED" ? new Date() : null,
+      },
+    });
 
     return this.productDto(updated);
   }
