@@ -105,9 +105,20 @@ export class BusinessService {
     if (!name) throw new BadRequestException({ code: "PRODUCT_NAME_REQUIRED", message: "Mahsulot nomini kiriting." });
     if (!String(body.type || "").trim()) throw new BadRequestException({ code: "PRODUCT_TYPE_REQUIRED", message: "Mahsulot turini tanlang." });
     const stock = parseQuantity(body.stock ?? 0, "Boshlang'ich qoldiq");
+    const barcode = String(body.barcode || "").trim() || null;
+    const [skuDuplicate, barcodeDuplicate] = await Promise.all([
+      this.prisma.product.findFirst({ where: { companyId: tenantId, sku }, select: { id: true } }),
+      barcode
+        ? this.prisma.product.findFirst({ where: { companyId: tenantId, barcode }, select: { id: true } })
+        : null,
+    ]);
+    if (skuDuplicate) throw new ConflictException({ code: "SKU_DUPLICATE", field: "sku", message: "Bu SKU boshqa mahsulotda mavjud." });
+    if (barcodeDuplicate) throw new ConflictException({ code: "BARCODE_DUPLICATE", field: "barcode", message: "Bu shtrix-kod boshqa mahsulotda mavjud." });
     const warehouse = body.warehouseId
       ? await this.prisma.warehouse.findFirst({ where: { id: body.warehouseId, companyId: tenantId, status: "ACTIVE" } })
-      : null;
+      : stock > 0
+        ? await this.ensureDefaultWarehouse(tenantId)
+        : null;
     if (body.warehouseId && !warehouse) throw new NotFoundException({ code: "WAREHOUSE_NOT_FOUND", message: "Ombor topilmadi." });
     if (body.supplierId) {
       const supplier = await this.prisma.supplier.findFirst({ where: { id: body.supplierId, companyId: tenantId, deletedAt: null } });
@@ -120,7 +131,7 @@ export class BusinessService {
           companyId: tenantId,
           name,
           sku,
-          barcode: body.barcode || null,
+          barcode,
           type: body.type || null,
           category: body.category || null,
           categoryId: await this.ensureCategory(tx, tenantId, body.categoryId || body.category),
@@ -183,6 +194,26 @@ export class BusinessService {
       ? categoryRecord?.name
       : categoryRecord?.name || body.category || null;
     const nextUnit = body.unit === undefined ? currentProduct.unit : normalizeUnit(body.unit);
+    const nextSku = body.sku === undefined ? currentProduct.sku : String(body.sku || "").trim();
+    const nextBarcode = body.barcode === undefined
+      ? currentProduct.barcode
+      : String(body.barcode || "").trim() || null;
+    if (!nextSku) {
+      throw new BadRequestException({ code: "PRODUCT_SKU_REQUIRED", field: "sku", message: "SKU kiriting." });
+    }
+
+    const [skuDuplicate, barcodeDuplicate] = await Promise.all([
+      this.prisma.product.findFirst({ where: { companyId: tenantId, sku: nextSku, id: { not: id } }, select: { id: true } }),
+      nextBarcode
+        ? this.prisma.product.findFirst({ where: { companyId: tenantId, barcode: nextBarcode, id: { not: id } }, select: { id: true } })
+        : null,
+    ]);
+    if (skuDuplicate) {
+      throw new ConflictException({ code: "SKU_DUPLICATE", field: "sku", message: "Bu SKU boshqa mahsulotda mavjud." });
+    }
+    if (barcodeDuplicate) {
+      throw new ConflictException({ code: "BARCODE_DUPLICATE", field: "barcode", message: "Bu shtrix-kod boshqa mahsulotda mavjud." });
+    }
     if (nextUnit !== currentProduct.unit) {
       const stockQuantity = currentProduct.stockItems.reduce((sum, item) => sum + toNumber(item.quantity), 0);
       const [movementCount, purchaseCount, saleCount, bomCount, productionCount] = await Promise.all([
@@ -204,12 +235,14 @@ export class BusinessService {
       if (!supplier) throw new NotFoundException({ code: "SUPPLIER_NOT_FOUND", message: "Yetkazib beruvchi topilmadi." });
     }
 
-    const updated = await this.prisma.product.update({
-      where: { id, companyId: tenantId },
-      data: {
+    let updated;
+    try {
+      updated = await this.prisma.product.update({
+        where: { id, companyId: tenantId },
+        data: {
         name: body.name,
-        sku: body.sku,
-        barcode: body.barcode,
+        sku: body.sku === undefined ? undefined : nextSku,
+        barcode: body.barcode === undefined ? undefined : nextBarcode,
         type: body.type,
         category: categoryName,
         categoryId,
@@ -231,8 +264,20 @@ export class BusinessService {
         isVariant: body.isVariant,
         supplierId: body.supplierId,
         status: body.status,
-      },
-    });
+        },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        const target = Array.isArray(error.meta?.target) ? error.meta.target.map(String) : [String(error.meta?.target || "")];
+        if (target.some((field) => field.includes("sku"))) {
+          throw new ConflictException({ code: "SKU_DUPLICATE", field: "sku", message: "Bu SKU boshqa mahsulotda mavjud." });
+        }
+        if (target.some((field) => field.includes("barcode"))) {
+          throw new ConflictException({ code: "BARCODE_DUPLICATE", field: "barcode", message: "Bu shtrix-kod boshqa mahsulotda mavjud." });
+        }
+      }
+      throw error;
+    }
     if (body.cost !== undefined || body.salePrice !== undefined) {
       await this.writeAudit(this.prisma, tenantId, actorUserId, "product.price_change", "product", id, { before: { cost: currentProduct.cost, salePrice: currentProduct.salePrice }, after: { cost: body.cost, salePrice: body.salePrice } });
     }
@@ -1493,12 +1538,13 @@ async createCategory(companyId: string, body: any) {
       const materialData: any[] = [];
       for (const item of materials) {
         const material = await this.ensureProduct(tx, tenantId, item.productId, item.productName || item.name, "RAW_MATERIAL", item.unit);
+        const recipeMaterial = this.normalizeBomMaterial(material, item);
         materialData.push({
           productId: material.id,
           productName: material.name,
-          quantity: parseQuantity(item.quantity, "Xomashyo miqdori"),
-          unit: material.unit,
-          cost: roundMoney(item.cost ?? material.cost),
+          quantity: recipeMaterial.quantity,
+          unit: recipeMaterial.unit,
+          cost: recipeMaterial.cost,
         });
       }
       const created = await tx.bom.create({
@@ -1560,7 +1606,19 @@ async createCategory(companyId: string, body: any) {
           version: current.version + 1,
           versionGroupId: current.versionGroupId || current.id,
           normalWastePercent: body.normalWastePercent === undefined ? current.normalWastePercent : body.normalWastePercent === null || body.normalWastePercent === "" ? null : toNumber(body.normalWastePercent),
-          materials: { create: materials.map((item: any) => ({ productId: item.productId || null, productName: materialMap.get(item.productId)?.name || item.productName || item.name || "Material", quantity: parseQuantity(item.quantity, "Xomashyo miqdori"), unit: materialMap.get(item.productId)?.unit || normalizeUnit(item.unit || "dona"), cost: roundMoney(item.cost ?? materialMap.get(item.productId)?.cost) })) },
+          materials: {
+            create: materials.map((item: any) => {
+              const product = materialMap.get(item.productId);
+              const recipeMaterial = this.normalizeBomMaterial(product, item);
+              return {
+                productId: item.productId || null,
+                productName: product?.name || item.productName || item.name || "Material",
+                quantity: recipeMaterial.quantity,
+                unit: recipeMaterial.unit,
+                cost: recipeMaterial.cost,
+              };
+            }),
+          },
         },
         include: { materials: true, outputProduct: true },
       });
@@ -1591,6 +1649,7 @@ async createCategory(companyId: string, body: any) {
       : null;
     if (outputProductId && !output) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: "Mahsulot topilmadi." });
     if (body.warehouseId) await this.requireWarehouse(this.prisma, tenantId, body.warehouseId);
+    const productionWarehouseId = body.warehouseId || (await this.ensureDefaultWarehouse(tenantId)).id;
     const company = await this.prisma.company.findFirst({ where: { id: tenantId }, select: { currency: true } });
     const overhead = this.normalizeOverheadItems(body.overheadItems);
     const recipeSnapshot = bom ? {
@@ -1613,7 +1672,7 @@ async createCategory(companyId: string, body: any) {
         outputProductName: output?.name || body.outputProductName || bom?.outputProductName,
         unit: output?.unit || bom?.unit || normalizeUnit(body.unit),
         plannedQuantity: parseQuantity(body.plannedQuantity ?? body.quantity ?? 1, "Rejalashtirilgan miqdor"),
-        warehouseId: body.warehouseId || null,
+        warehouseId: productionWarehouseId,
         overheadCost: overhead.total || roundMoney(body.overheadCost ?? bom?.overheadCost),
         overheadItems: overhead.items,
         recipeVersion: bom?.version || null,
@@ -2411,7 +2470,30 @@ async createCategory(companyId: string, body: any) {
   }
 
   private async ensureDefaultWarehouse(companyId: string) {
-    const existing = await this.prisma.warehouse.findFirst({ where: { companyId, status: "ACTIVE" }, orderBy: { createdAt: "asc" } });
+    const setting = await this.prisma.companySetting.findUnique({
+      where: { companyId_key: { companyId, key: "platform" } },
+      select: { value: true },
+    });
+    const settings: any = setting?.value || {};
+    const configuredIds = [
+      settings?.defaults?.warehouseId,
+      settings?.warehouse?.defaultWarehouseId,
+      settings?.manufacturing?.defaultProductionWarehouseId,
+      settings?.pos?.defaultWarehouseId,
+    ].filter(Boolean);
+    const configured = configuredIds.length
+      ? await this.prisma.warehouse.findFirst({ where: { companyId, status: "ACTIVE", id: { in: configuredIds } } })
+      : null;
+    if (configured) return configured;
+
+    const existing = await this.prisma.warehouse.findFirst({
+      where: {
+        companyId,
+        status: "ACTIVE",
+        OR: [{ code: "MAIN" }, { name: "Asosiy ombor" }],
+      },
+      orderBy: { createdAt: "asc" },
+    }) || await this.prisma.warehouse.findFirst({ where: { companyId, status: "ACTIVE" }, orderBy: { createdAt: "asc" } });
     if (existing) return existing;
     return this.prisma.warehouse.create({ data: { companyId, name: "Asosiy ombor", code: "MAIN" } });
   }
@@ -2517,6 +2599,17 @@ async createCategory(companyId: string, body: any) {
         subtotal: roundMoney(quantity * cost),
       };
     });
+  }
+
+  private normalizeBomMaterial(product: any, item: any) {
+    const productUnit = normalizeUnit(product?.unit || item?.unit || "dona");
+    const recipeUnit = normalizeUnit(item?.unit || productUnit);
+    const quantity = parseQuantity(item?.quantity, "Xomashyo miqdori");
+    const cost = product
+      ? roundMoney(toNumber(product.cost) * convertQuantity(1, recipeUnit, productUnit))
+      : roundMoney(item?.cost);
+
+    return { quantity, unit: recipeUnit, cost };
   }
 
   private normalizeOverheadItems(items: any) {
