@@ -2028,8 +2028,9 @@ async createCategory(companyId: string, body: any) {
           priority: body.priority || null,
           responsible: body.responsible || body.responsibleEmployee || null,
           stages: {
-            create: stages.map((stage: any) => ({
+            create: stages.map((stage: any, index: number) => ({
               name: stage.name || String(stage),
+              sortOrder: Number.isFinite(Number(stage.sortOrder)) ? Number(stage.sortOrder) : index,
               status: stage.status === "PENDING" ? "PLANNED" : stage.status || "PLANNED",
               notes: stage.note || stage.notes || null,
             })),
@@ -2660,13 +2661,64 @@ async createCategory(companyId: string, body: any) {
 
   async updateProductionStage(companyId: string, orderId: string, stageId: string, action: "start" | "complete", body: any = {}) {
     const tenantId = this.requireCompany(companyId);
-    const stage = await this.prisma.productionStage.findFirst({ where: { id: stageId, orderId, order: { companyId: tenantId } }, include: { order: true } });
-    if (!stage) throw new NotFoundException({ code: "PRODUCTION_STAGE_NOT_FOUND", message: "Bosqich topilmadi." });
-    if (stage.order.status === "COMPLETED" || stage.order.status === "CANCELLED") throw new ConflictException({ code: "PRODUCTION_LOCKED", message: "Yakunlangan ishlab chiqarish bosqichi o'zgartirilmaydi." });
-    if (action === "start" && !["PLANNED"].includes(stage.status)) throw new ConflictException({ code: "STAGE_TRANSITION_INVALID", message: "Bosqichni boshlash mumkin emas." });
-    if (action === "complete" && stage.status !== "IN_PROGRESS") throw new ConflictException({ code: "STAGE_TRANSITION_INVALID", message: "Avval bosqichni boshlang." });
-    const updated = await this.prisma.productionStage.update({ where: { id: stageId }, data: action === "start" ? { status: "IN_PROGRESS", startedAt: new Date() } : { status: "COMPLETED", endedAt: new Date(), notes: body.notes || body.note }, include: { order: true } });
-    return { ...updated, status: updated.status === "PLANNED" ? "PENDING" : updated.status };
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.productionOrder.findFirst({
+        where: { id: orderId, companyId: tenantId },
+        include: {
+          bom: { include: { materials: true, outputProduct: true } },
+          stages: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }] },
+        },
+      });
+      if (!order) throw new NotFoundException({ code: "PRODUCTION_NOT_FOUND", message: "Ishlab chiqarish topilmadi." });
+
+      const stageIndex = order.stages.findIndex((item) => item.id === stageId);
+      const stage = stageIndex >= 0 ? order.stages[stageIndex] : null;
+      if (!stage) throw new NotFoundException({ code: "PRODUCTION_STAGE_NOT_FOUND", message: "Bosqich topilmadi." });
+
+      if (order.status === "COMPLETED" || order.status === "CANCELLED") {
+        throw new ConflictException({ code: "PRODUCTION_LOCKED", message: "Yakunlangan ishlab chiqarish bosqichi o'zgartirilmaydi." });
+      }
+      if (order.status !== "IN_PROGRESS") {
+        throw new ConflictException({ code: "PRODUCTION_NOT_STARTED", message: "Avval ishlab chiqarishni boshlang." });
+      }
+
+      if (action === "start") {
+        if (stage.status === "IN_PROGRESS") throw new ConflictException({ code: "STAGE_ALREADY_STARTED", message: "Bosqich allaqachon boshlangan." });
+        if (stage.status === "COMPLETED") throw new ConflictException({ code: "STAGE_ALREADY_COMPLETED", message: "Tugagan bosqichni qayta boshlash mumkin emas." });
+        if (stage.status !== "PLANNED") throw new ConflictException({ code: "STAGE_TRANSITION_INVALID", message: "Bosqichni boshlash mumkin emas." });
+
+        const previousStage = stageIndex > 0 ? order.stages[stageIndex - 1] : null;
+        if (previousStage && previousStage.status !== "COMPLETED") {
+          throw new ConflictException({ code: "PREVIOUS_STAGE_INCOMPLETE", message: `"${previousStage.name}" bosqichi tugatilmagan.` });
+        }
+
+        const updated = await tx.productionStage.updateMany({
+          where: { id: stageId, orderId, status: "PLANNED" },
+          data: { status: "IN_PROGRESS", startedAt: new Date() },
+        });
+        if (updated.count !== 1) throw new ConflictException({ code: "STAGE_STATE_CHANGED", message: "Bosqich holati o'zgargan. Sahifani yangilang." });
+      } else {
+        if (stage.status === "COMPLETED") throw new ConflictException({ code: "STAGE_ALREADY_COMPLETED", message: "Bosqich allaqachon tugatilgan." });
+        if (stage.status !== "IN_PROGRESS") throw new ConflictException({ code: "STAGE_NOT_IN_PROGRESS", message: "Avval bosqichni boshlang." });
+
+        const updated = await tx.productionStage.updateMany({
+          where: { id: stageId, orderId, status: "IN_PROGRESS" },
+          data: { status: "COMPLETED", endedAt: new Date(), notes: body.notes || body.note || stage.notes },
+        });
+        if (updated.count !== 1) throw new ConflictException({ code: "STAGE_STATE_CHANGED", message: "Bosqich holati o'zgargan. Sahifani yangilang." });
+      }
+
+      const updatedOrder = await tx.productionOrder.findFirst({
+        where: { id: orderId, companyId: tenantId },
+        include: {
+          bom: { include: { materials: true, outputProduct: true } },
+          stages: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }] },
+        },
+      });
+      if (!updatedOrder) throw new NotFoundException({ code: "PRODUCTION_NOT_FOUND", message: "Ishlab chiqarish topilmadi." });
+
+      return this.productionOrderDto(updatedOrder);
+    });
   }
 
   async updateProductionQuality(companyId: string, id: string, body: any) {
@@ -3927,9 +3979,7 @@ async createCategory(companyId: string, body: any) {
       );
 
       const actualQuantity = decimalToNumber(order?.actualQuantity);
-      const stages = Array.isArray(order?.stages)
-        ? order.stages.map((stage: any) => ({ ...stage, status: stage.status === "PLANNED" ? "PENDING" : stage.status }))
-        : [];
+      const stages = this.productionStageDtos(order?.stages);
 
       return {
         id: order?.id,
@@ -4090,7 +4140,7 @@ async createCategory(companyId: string, body: any) {
       dueDate: order.dueDate || null,
       priority: order.priority || null,
       responsible: order.responsible || null,
-      stages: order.stages?.map((stage: any) => ({ ...stage, status: stage.status === "PLANNED" ? "PENDING" : stage.status })) || [],
+      stages: this.productionStageDtos(order.stages),
       productId,
       productName,
       outputProductId: productId,
@@ -4098,6 +4148,21 @@ async createCategory(companyId: string, body: any) {
       requiredMaterials,
       bom: order.bom ? this.bomDto(order.bom) : null,
     };
+  }
+
+  private productionStageDtos(stages: any[] = []) {
+    return [...(Array.isArray(stages) ? stages : [])]
+      .sort((left: any, right: any) => {
+        const leftOrder = Number.isFinite(Number(left?.sortOrder)) ? Number(left.sortOrder) : 0;
+        const rightOrder = Number.isFinite(Number(right?.sortOrder)) ? Number(right.sortOrder) : 0;
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return String(left?.id || "").localeCompare(String(right?.id || ""));
+      })
+      .map((stage: any) => ({
+        ...stage,
+        status: stage.status === "PLANNED" ? "PENDING" : stage.status,
+        completedAt: stage.completedAt || stage.endedAt || null,
+      }));
   }
 
   private financeDto(txn: any) {

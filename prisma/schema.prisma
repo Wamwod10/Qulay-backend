@@ -865,6 +865,7 @@ model ProductionStage {
   id        String          @id @default(cuid())
   orderId   String
   name      String
+  sortOrder Int             @default(0)
   status    ProductionStatus @default(PLANNED)
   startedAt DateTime?
   endedAt   DateTime?
@@ -872,6 +873,7 @@ model ProductionStage {
   order     ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@index([orderId])
+  @@index([orderId, sortOrder])
 }
 
 model Employee {
