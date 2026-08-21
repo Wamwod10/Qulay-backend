@@ -25,7 +25,7 @@ const UNIT_ALIASES: Record<string, keyof typeof UNIT_DEFINITIONS> = {
 };
 
 export const normalizeUnit = (value: unknown): keyof typeof UNIT_DEFINITIONS => {
-  const key = String(value || "dona").trim().toLowerCase();
+  const key = String(value || "").trim().toLowerCase();
   const unit = UNIT_ALIASES[key];
   if (!unit) {
     throw new BadRequestException({ code: "INVALID_UNIT", message: `Noma'lum o'lchov birligi: ${value}.` });

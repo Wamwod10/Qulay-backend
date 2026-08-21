@@ -77,8 +77,9 @@ test("10 user-facing recipe text does not use BOM", () => {
 test("11 recipe output and materials can create real products", () => {
   const form = frontend("modules/manufacturing/components/BomForm/BomForm.jsx");
   const service = backend("modules/business/business.service.ts");
-  assert.match(form, /type: "FINISHED_GOOD"/);
-  assert.match(form, /type: "RAW_MATERIAL"/);
+  assert.match(form, /ProductFormModal/);
+  assert.match(form, /FINISHED_GOOD/);
+  assert.match(form, /RAW_MATERIAL/);
   assert.match(service, /const output = await this\.ensureProduct/);
 });
 
@@ -152,7 +153,7 @@ test("23 production material totals stay separated by dimension", () => {
 
 test("24 finished product label explains the recipe output", () => {
   assert.match(frontend("modules/manufacturing/components/BomForm/BomForm.jsx"), /Natijada olinadigan mahsulot/);
-  assert.match(frontend("modules/manufacturing/components/BomForm/BomForm.jsx"), /Ushbu retsept/);
+  assert.match(frontend("modules/manufacturing/components/BomForm/BomForm.jsx"), /Chiqish miqdori/);
 });
 
 test("25 production completion sends the canonical produced quantity", () => {
@@ -175,7 +176,7 @@ test("27 completion reconciles actual material consumption against the start sna
 
 test("28 production cancellation has an idempotent stock rollback", () => {
   const service = backend("modules/business/business.service.ts");
-  assert.match(service, /PRODUCTION_CANCEL_ROLLBACK/);
+  assert.match(service, /PRODUCTION_CANCEL_RETURN/);
   assert.match(service, /order\.status === "CANCELLED"/);
 });
 
@@ -197,16 +198,16 @@ test("31 overhead details are persisted as item history", () => {
 test("32 actual production cost and zero-output unit cost are safe", () => {
   const service = backend("modules/business/business.service.ts");
   assert.match(service, /actualProductionCost/);
-  assert.match(service, /actualQuantity > 0 \? roundMoney/);
+  assert.match(service, /acceptedQuantity > 0 \? roundMoney/);
 });
 
-test("33 production uses a current-at-start material cost snapshot", () => {
-  assert.match(backend("modules/business/business.service.ts"), /costingPolicy: "CURRENT_AT_START"/);
+test("33 production uses a batch-actual material cost snapshot", () => {
+  assert.match(backend("modules/business/business.service.ts"), /costingPolicy: "BATCH_ACTUAL"/);
   assert.match(readFileSync(resolve(process.cwd(), "prisma", "schema.prisma"), "utf8"), /materialSnapshot\s+Json/);
 });
 
 test("34 purchase quantities are converted to the product base unit", () => {
-  assert.match(backend("modules/business/business.service.ts"), /convertQuantity\(1, purchaseUnit, unit\)/);
+  assert.match(backend("modules/business/business.service.ts"), /convertQuantity\(purchaseQuantity, purchaseUnit, unit\)/);
   assert.equal(convertQuantity(500, "g", "kg"), 0.5);
 });
 
@@ -259,7 +260,7 @@ test("43 cross-module data uses the shared backend stock refresh", () => {
 test("44 regression scenario covers decimal units, actual consumption, purchase conversion and TJS", () => {
   assert.equal(convertQuantity(500, "g", "kg"), 0.5);
   assert.equal(convertQuantity(1.5, "litr", "ml"), 1500);
-  assert.match(backend("modules/business/business.service.ts"), /PRODUCTION_ADJUSTMENT/);
+  assert.match(backend("modules/business/business.service.ts"), /PRODUCTION_ACTUAL_EXTRA/);
   assert.match(frontend("modules/settings/utils/formatSettingsHelpers.js"), /currency/);
 });
 
@@ -319,7 +320,7 @@ test("51 packaging material rows consume stock items", () => {
   const service = backend("modules/business/business.service.ts");
   assert.match(service, /PACKAGING_MATERIAL/);
   assert.match(service, /row\.materials/);
-  assert.match(frontend("modules/manufacturing/production-orders/components/ProductionCompleteModal/ProductionCompleteModal.jsx"), /Qop\/material/);
+  assert.match(frontend("modules/manufacturing/production-orders/components/ProductionCompleteModal/ProductionCompleteModal.jsx"), /Qadoq materiali/);
 });
 
 test("52 recipe edits create versions and preserve production snapshots", () => {
@@ -328,7 +329,7 @@ test("52 recipe edits create versions and preserve production snapshots", () => 
   assert.match(schema, /versionGroupId/);
   assert.match(schema, /recipeSnapshot\s+Json/);
   assert.match(service, /version: current\.version \+ 1/);
-  assert.match(service, /recipeVersion: bom\?\.version/);
+  assert.match(service, /recipeVersion: recipeSnapshot\.version/);
 });
 
 test("53 recipes deactivate instead of deleting historical records", () => {
@@ -405,7 +406,7 @@ test("62 completed sales persist batch COGS and profit", () => {
 test("63 manufactured cost and recipe cost are frozen in snapshots", () => {
   const service = backend("modules/business/business.service.ts");
   const schema = readFileSync(resolve(process.cwd(), "prisma", "schema.prisma"), "utf8");
-  assert.match(service, /CURRENT_AT_START/);
+  assert.match(service, /BATCH_ACTUAL/);
   assert.match(service, /materialSnapshot/);
   assert.match(schema, /actualUnitCost/);
 });

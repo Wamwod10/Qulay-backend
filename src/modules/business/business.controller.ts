@@ -116,7 +116,6 @@ export class CategoriesController {
   }
 
   @Post()
-  @Post()
   @AllowInlineCreateFrom("products")
   create(@CurrentCompany() companyId: string, @Body() body: any) {
     return this.service.createCategory(companyId, body);
@@ -136,6 +135,20 @@ export class WarehousesController {
   @Post()
   create(@CurrentCompany() companyId: string, @Body() body: any) {
     return this.service.createWarehouse(companyId, body);
+  }
+
+  @Patch(":id")
+  update(
+    @CurrentCompany() companyId: string,
+    @Param("id") id: string,
+    @Body() body: any,
+  ) {
+    return this.service.updateWarehouse(companyId, id, body);
+  }
+
+  @Delete(":id")
+  delete(@CurrentCompany() companyId: string, @Param("id") id: string) {
+    return this.service.deleteWarehouse(companyId, id);
   }
 }
 
@@ -202,18 +215,30 @@ export class InventoryController {
   }
 
   @Post("stock/in")
-  stockIn(@CurrentCompany() companyId: string, @Body() body: any) {
-    return this.service.stockIn(companyId, body);
+  stockIn(
+    @CurrentCompany() companyId: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
+    return this.service.stockIn(companyId, body, userId);
   }
 
   @Post("stock/out")
-  stockOut(@CurrentCompany() companyId: string, @Body() body: any) {
-    return this.service.stockOut(companyId, body);
+  stockOut(
+    @CurrentCompany() companyId: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
+    return this.service.stockOut(companyId, body, userId);
   }
 
   @Post("stock/transfer")
-  transfer(@CurrentCompany() companyId: string, @Body() body: any) {
-    return this.service.transferStock(companyId, body);
+  transfer(
+    @CurrentCompany() companyId: string,
+    @Body() body: any,
+    @CurrentUser("id") userId: string,
+  ) {
+    return this.service.transferStock(companyId, body, userId);
   }
 }
 
@@ -499,13 +524,21 @@ export class ManufacturingController {
   }
 
   @Get("orders")
-  orders(@CurrentCompany() companyId: string) {
-    return this.service.listProductionOrders(companyId);
+  orders(
+    @CurrentCompany() companyId: string,
+    @Query() query: Record<string, string | undefined>,
+  ) {
+    return this.service.listProductionOrders(companyId, query);
   }
 
   @Post("orders")
   createOrder(@CurrentCompany() companyId: string, @Body() body: any) {
     return this.service.createProductionOrder(companyId, body);
+  }
+
+  @Post("material-availability")
+  materialAvailability(@CurrentCompany() companyId: string, @Body() body: any) {
+    return this.service.getProductionMaterialAvailability(companyId, body || {});
   }
 
   @Get("orders/:id")

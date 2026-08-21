@@ -452,7 +452,7 @@ model Batch {
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
 
-  @@unique([companyId, batchNumber])
+  @@unique([companyId, batchNumber, productId, warehouseId])
   @@index([companyId, productId, warehouseId])
   @@index([companyId, expiryDate])
   @@index([companyId, receivedDate])
@@ -546,7 +546,7 @@ model PurchaseItem {
   receivedQuantity Decimal  @default(0) @db.Decimal(18, 6)
   unit             String   @default("dona")
   purchaseUnit     String?
-  cost             Decimal  @default(0) @db.Decimal(18, 2)
+  cost             Decimal  @default(0) @db.Decimal(18, 6)
   salePrice        Decimal? @db.Decimal(18, 2)
   subtotal         Decimal  @default(0) @db.Decimal(18, 2)
   purchase         Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
@@ -820,6 +820,8 @@ model ProductionOrder {
   packaging         Json?
   remainingBulkQuantity Decimal       @default(0) @db.Decimal(18, 6)
   warehouseId       String?
+  materialWarehouseId String?
+  outputWarehouseId String?
   status            ProductionStatus  @default(PLANNED)
   materialCost      Decimal           @default(0) @db.Decimal(18, 2)
   overheadCost      Decimal           @default(0) @db.Decimal(18, 2)
@@ -837,6 +839,10 @@ model ProductionOrder {
   qualityStatus     String?
   qualityNote       String?
   completionNote    String?
+  plannedDate       DateTime?
+  dueDate           DateTime?
+  priority          String?
+  responsible       String?
   startedAt         DateTime?
   completedAt       DateTime?
   cancelledAt       DateTime?
@@ -965,19 +971,23 @@ model InventoryCount {
 }
 
 model SupplierPriceHistory {
-  id         String   @id @default(cuid())
-  companyId  String
-  supplierId String?
-  productId  String
-  date       DateTime @default(now())
-  unit       String
-  price      Decimal  @db.Decimal(18, 6)
-  currency   String
-  sourceType String?
-  sourceId   String?
-  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  supplier   Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  id                 String   @id @default(cuid())
+  companyId          String
+  supplierId         String?
+  productId          String
+  date               DateTime @default(now())
+  unit               String
+  price              Decimal  @db.Decimal(18, 6)
+  purchaseUnit       String?
+  purchaseQuantity   Decimal? @db.Decimal(18, 6)
+  canonicalUnit      String?
+  canonicalUnitPrice Decimal? @db.Decimal(18, 6)
+  currency           String
+  sourceType         String?
+  sourceId           String?
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplier           Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  product            Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@index([companyId, productId, date])
   @@index([supplierId, productId])

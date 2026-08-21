@@ -55,14 +55,27 @@ export class BusinessService {
       const statuses = String(query.status).split(",").map((status) => status.trim()).filter(Boolean);
       where.status = statuses.length > 1 ? { in: statuses } : statuses[0];
     }
-    if (query.category) where.category = query.category;
     if (query.type) where.type = query.type;
+    const and: any[] = [];
+    if (query.category) {
+      and.push({
+        OR: [
+          { categoryId: query.category },
+          { category: query.category },
+        ],
+      });
+    }
     if (search) {
-      where.OR = [
+      and.push({
+        OR: [
         { name: { contains: search, mode: "insensitive" } },
         { sku: { contains: search, mode: "insensitive" } },
         { barcode: { contains: search, mode: "insensitive" } },
-      ];
+        ],
+      });
+    }
+    if (and.length) {
+      where.AND = and;
     }
 
     const [total, products] = await Promise.all([
@@ -106,6 +119,7 @@ export class BusinessService {
     const name = String(body.name || "").trim();
     if (!name) throw new BadRequestException({ code: "PRODUCT_NAME_REQUIRED", message: "Mahsulot nomini kiriting." });
     if (!String(body.type || "").trim()) throw new BadRequestException({ code: "PRODUCT_TYPE_REQUIRED", message: "Mahsulot turini tanlang." });
+    if (!String(body.unit || "").trim()) throw new BadRequestException({ code: "PRODUCT_UNIT_REQUIRED", field: "unit", message: "O'lchov birligini tanlang." });
     const stock = parseQuantity(body.stock ?? 0, "Boshlang'ich qoldiq");
     const barcode = String(body.barcode || "").trim() || null;
     const [skuDuplicate, barcodeDuplicate] = await Promise.all([
@@ -240,6 +254,9 @@ export class BusinessService {
       ? categoryRecord?.name
       : categoryRecord?.name || body.category || null;
     const nextUnit = body.unit === undefined ? currentProduct.unit : normalizeUnit(body.unit);
+    if (body.unit !== undefined && !String(body.unit || "").trim()) {
+      throw new BadRequestException({ code: "PRODUCT_UNIT_REQUIRED", field: "unit", message: "O'lchov birligini tanlang." });
+    }
     const nextSku = body.sku === undefined ? currentProduct.sku : String(body.sku || "").trim();
     const nextBarcode = body.barcode === undefined
       ? currentProduct.barcode
@@ -272,7 +289,7 @@ export class BusinessService {
       if (stockQuantity > 0 || movementCount || purchaseCount || saleCount || bomCount || productionCount) {
         throw new ConflictException({
           code: "UNIT_CHANGE_BLOCKED",
-          message: "Qoldiq yoki tarix mavjud mahsulotning o'lchov birligini o'zgartirib bo'lmaydi. Avval yangi mahsulot yarating.",
+          message: "Qoldiq yoki tarix mavjud mahsulotning o'lchov birligini o'zgartirib bo'lmaydi. Yangi mahsulot yarating.",
         });
       }
     }
@@ -500,17 +517,102 @@ if (body.cost !== undefined || body.salePrice !== undefined) {
   }
 
   async createWarehouse(companyId: string, body: any) {
+    const tenantId = this.requireCompany(companyId);
+    const name = String(body.name || "").trim();
+    const code = String(body.code || "").trim() || null;
+    const status = String(body.status || "ACTIVE").toUpperCase();
+
+    if (!name) throw new BadRequestException({ code: "WAREHOUSE_NAME_REQUIRED", message: "Ombor nomini kiriting." });
+    if (!["ACTIVE", "INACTIVE", "ARCHIVED"].includes(status)) throw new BadRequestException({ code: "WAREHOUSE_STATUS_INVALID", message: "Ombor statusi noto'g'ri." });
+
+    const duplicate = await this.prisma.warehouse.findFirst({
+      where: {
+        companyId: tenantId,
+        OR: [
+          { name: { equals: name, mode: "insensitive" } },
+          ...(code ? [{ code: { equals: code, mode: Prisma.QueryMode.insensitive } }] : []),
+        ],
+      },
+    });
+    if (duplicate) throw new ConflictException({ code: "WAREHOUSE_DUPLICATE", message: "Bu nom yoki koddagi ombor allaqachon mavjud." });
+
     const warehouse = await this.prisma.warehouse.create({
       data: {
-        companyId: this.requireCompany(companyId),
-        name: body.name,
-        code: body.code,
-        address: body.address,
-        status: body.status || "ACTIVE",
+        companyId: tenantId,
+        name,
+        code,
+        address: String(body.address || "").trim() || null,
+        status: status as any,
       },
     });
 
     return warehouse;
+  }
+
+  async updateWarehouse(companyId: string, id: string, body: any) {
+    const tenantId = this.requireCompany(companyId);
+    const warehouse = await this.prisma.warehouse.findFirst({ where: { id, companyId: tenantId } });
+    if (!warehouse) throw new NotFoundException({ code: "WAREHOUSE_NOT_FOUND", message: "Ombor topilmadi." });
+
+    const name = body.name === undefined ? warehouse.name : String(body.name || "").trim();
+    const code = body.code === undefined ? warehouse.code : String(body.code || "").trim() || null;
+    const status = body.status === undefined ? warehouse.status : String(body.status || "ACTIVE").toUpperCase();
+    if (!name) throw new BadRequestException({ code: "WAREHOUSE_NAME_REQUIRED", message: "Ombor nomini kiriting." });
+    if (!["ACTIVE", "INACTIVE", "ARCHIVED"].includes(status)) throw new BadRequestException({ code: "WAREHOUSE_STATUS_INVALID", message: "Ombor statusi noto'g'ri." });
+
+    const duplicate = await this.prisma.warehouse.findFirst({
+      where: {
+        companyId: tenantId,
+        id: { not: id },
+        OR: [
+          { name: { equals: name, mode: "insensitive" } },
+          ...(code ? [{ code: { equals: code, mode: Prisma.QueryMode.insensitive } }] : []),
+        ],
+      },
+    });
+    if (duplicate) throw new ConflictException({ code: "WAREHOUSE_DUPLICATE", message: "Bu nom yoki koddagi ombor allaqachon mavjud." });
+
+    return this.prisma.warehouse.update({
+      where: { id, companyId: tenantId },
+      data: {
+        name,
+        code,
+        address: body.address === undefined ? undefined : String(body.address || "").trim() || null,
+        status: status as any,
+      },
+    });
+  }
+
+  async deleteWarehouse(companyId: string, id: string) {
+    const tenantId = this.requireCompany(companyId);
+    const warehouse = await this.prisma.warehouse.findFirst({ where: { id, companyId: tenantId } });
+    if (!warehouse) throw new NotFoundException({ code: "WAREHOUSE_NOT_FOUND", message: "Ombor topilmadi." });
+
+    const defaultWarehouse = await this.resolveDefaultWarehouse(tenantId, true);
+    if (defaultWarehouse?.id === id) {
+      throw new ConflictException({ code: "DEFAULT_WAREHOUSE_DELETE_BLOCKED", message: "Asosiy/default omborni o'chirib bo'lmaydi. Avval sozlamadan boshqa omborni default qiling." });
+    }
+
+    const [stockWithQuantity, movementCount, batchCount, purchaseCount, saleCount, inventoryCount] = await Promise.all([
+      this.prisma.stockItem.count({ where: { companyId: tenantId, warehouseId: id, OR: [{ quantity: { gt: 0 } }, { reserved: { gt: 0 } }] } }),
+      this.prisma.stockMovement.count({ where: { companyId: tenantId, warehouseId: id } }),
+      this.prisma.batch.count({ where: { companyId: tenantId, warehouseId: id } }),
+      this.prisma.purchase.count({ where: { companyId: tenantId, warehouseId: id } }),
+      this.prisma.sale.count({ where: { companyId: tenantId, warehouseId: id } }),
+      this.prisma.inventoryCount.count({ where: { companyId: tenantId, warehouseId: id } }),
+    ]);
+
+    if (stockWithQuantity > 0) {
+      throw new ConflictException({ code: "WAREHOUSE_HAS_STOCK", message: "Bu omborni o'chirib bo'lmaydi, unda qoldiq mavjud." });
+    }
+
+    if (movementCount + batchCount + purchaseCount + saleCount + inventoryCount > 0) {
+      const archived = await this.prisma.warehouse.update({ where: { id, companyId: tenantId }, data: { status: "ARCHIVED" } });
+      return { deleted: true, softDelete: true, warehouse: archived };
+    }
+
+    await this.prisma.warehouse.delete({ where: { id, companyId: tenantId } });
+    return { deleted: true, softDelete: false };
   }
 
   async listUnits() {
@@ -548,9 +650,10 @@ async createCategory(companyId: string, body: any) {
   });
 
   if (existing) {
-    return this.prisma.category.update({
-      where: { id: existing.id },
-      data: { status: "ACTIVE" },
+    throw new ConflictException({
+      code: "CATEGORY_DUPLICATE",
+      field: "name",
+      message: "Bu kategoriya allaqachon mavjud.",
     });
   }
 
@@ -571,7 +674,7 @@ async createCategory(companyId: string, body: any) {
         warehouseId: query.warehouseId || undefined,
         productId: query.productId || undefined,
       },
-      include: { product: { include: { batches: { where: { status: "ACTIVE", remainingQuantity: { gt: 0 } }, orderBy: { expiryDate: "asc" } } } }, warehouse: true },
+      include: { product: { include: { categoryRef: true, batches: { where: { status: "ACTIVE", remainingQuantity: { gt: 0 } }, orderBy: { expiryDate: "asc" } } } }, warehouse: true },
       orderBy: { updatedAt: "desc" },
     });
 
@@ -600,30 +703,30 @@ async createCategory(companyId: string, body: any) {
     };
   }
 
-  async stockIn(companyId: string, body: any) {
+  async stockIn(companyId: string, body: any, actorUserId?: string) {
     return this.changeStock(companyId, {
       ...body,
       type: "IN",
-      quantity: parseQuantity(body.quantity),
+      quantity: body.quantity,
       reason: body.source || body.reason || "MANUAL_IN",
-    });
+    }, actorUserId);
   }
 
-  async stockOut(companyId: string, body: any) {
+  async stockOut(companyId: string, body: any, actorUserId?: string) {
     return this.changeStock(companyId, {
       ...body,
       type: "OUT",
-      quantity: -parseQuantity(body.quantity),
+      quantity: body.quantity,
       reason: body.reason || "MANUAL_OUT",
-    });
+    }, actorUserId);
   }
 
-  async transferStock(companyId: string, body: any) {
+  async transferStock(companyId: string, body: any, actorUserId?: string) {
     const tenantId = this.requireCompany(companyId);
-    const amount = parseQuantity(body.quantity);
     const transferKey = body.idempotencyKey || `transfer:${body.fromWarehouseId}:${body.toWarehouseId}:${body.productId}:${Date.now()}`;
 
-    if (!amount || amount <= 0) throw new BadRequestException({ code: "INVALID_QUANTITY", message: "Miqdor 0 dan katta bo'lsin." });
+    const rawAmount = parseQuantity(body.quantity, "Ko'chirish miqdori");
+    if (!rawAmount || rawAmount <= 0) throw new BadRequestException({ code: "INVALID_QUANTITY", message: "Miqdor 0 dan katta bo'lsin." });
     if (body.fromWarehouseId === body.toWarehouseId) throw new BadRequestException({ code: "SAME_WAREHOUSE", message: "Omborlar bir xil bo'lmasin." });
 
     return this.prisma.$transaction(async (tx) => {
@@ -633,6 +736,10 @@ async createCategory(companyId: string, body: any) {
         });
         if (existing) return this.listStock(tenantId, {});
       }
+      const product = await this.requireProduct(tx, tenantId, body.productId);
+      const amount = this.convertToProductUnit(rawAmount, body.inputUnit || body.unit || product.unit, product.unit, "Ko'chirish miqdori");
+      await this.requireWarehouse(tx, tenantId, body.fromWarehouseId);
+      await this.requireWarehouse(tx, tenantId, body.toWarehouseId);
       await this.adjustStockDelta(tx, tenantId, body.fromWarehouseId, body.productId, -amount, {
         type: "TRANSFER_OUT",
         reason: "TRANSFER",
@@ -641,6 +748,7 @@ async createCategory(companyId: string, body: any) {
         idempotencyKey: `${transferKey}:out`,
         note: body.note,
         destinationWarehouseId: body.toWarehouseId,
+        actorUserId,
       });
       await this.adjustStockDelta(tx, tenantId, body.toWarehouseId, body.productId, amount, {
         type: "TRANSFER_IN",
@@ -650,8 +758,10 @@ async createCategory(companyId: string, body: any) {
         idempotencyKey: `${transferKey}:in`,
         note: body.note,
         sourceWarehouseId: body.fromWarehouseId,
+        actorUserId,
       });
 
+      await this.writeAudit(tx, tenantId, actorUserId, "stock.transfer", "product", body.productId, { sourceWarehouseId: body.fromWarehouseId, destinationWarehouseId: body.toWarehouseId, quantity: amount, unit: product.unit, note: body.note || null });
       return this.listStock(tenantId, {});
     });
   }
@@ -663,6 +773,7 @@ async createCategory(companyId: string, body: any) {
         warehouseId: query.warehouseId || undefined,
         productId: query.productId || undefined,
       },
+      include: { batch: true },
       orderBy: { createdAt: "desc" },
       take: 200,
     });
@@ -684,6 +795,13 @@ async createCategory(companyId: string, body: any) {
     const actualQuantity = parseQuantity(body.actualQuantity, "Haqiqiy qoldiq");
     if (actualQuantity < 0) throw new BadRequestException({ code: "NEGATIVE_INVENTORY_COUNT", message: "Inventarizatsiya qoldig'i manfiy bo'lmasin." });
     return this.prisma.$transaction(async (tx) => {
+      if (body.idempotencyKey) {
+        const existingMovement = await tx.stockMovement.findUnique({ where: { companyId_idempotencyKey: { companyId: tenantId, idempotencyKey: body.idempotencyKey } } });
+        if (existingMovement) {
+          const existingCount = await tx.inventoryCount.findFirst({ where: { companyId: tenantId, warehouseId: body.warehouseId, productId: body.productId }, orderBy: { createdAt: "desc" } });
+          if (existingCount) return this.inventoryCountDto(existingCount);
+        }
+      }
       const product = await tx.product.findFirst({ where: { id: body.productId, companyId: tenantId, deletedAt: null } });
       if (!product) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: "Mahsulot topilmadi." });
       await this.requireWarehouse(tx, tenantId, body.warehouseId);
@@ -708,7 +826,7 @@ async createCategory(companyId: string, body: any) {
           reason: "INVENTORY_COUNT",
           sourceType: "INVENTORY_COUNT",
           sourceId: count.id,
-          idempotencyKey: `inventory-count:${count.id}`,
+          idempotencyKey: body.idempotencyKey || `inventory-count:${count.id}`,
           note: count.reason,
           actorUserId,
         });
@@ -819,19 +937,20 @@ async createCategory(companyId: string, body: any) {
   }
 
   async deleteSupplier(companyId: string, id: string) {
+    const tenantId = this.requireCompany(companyId);
     await this.getSupplier(companyId, id);
     const [purchases, history] = await Promise.all([
-      this.prisma.purchase.count({ where: { supplierId: id } }),
-      this.prisma.supplierPriceHistory.count({ where: { supplierId: id } }),
+      this.prisma.purchase.count({ where: { supplierId: id, companyId: tenantId } }),
+      this.prisma.supplierPriceHistory.count({ where: { supplierId: id, companyId: tenantId } }),
     ]);
 
     if (purchases > 0 || history > 0) {
-      await this.prisma.supplier.update({ where: { id, companyId: this.requireCompany(companyId) }, data: { status: "INACTIVE", deletedAt: new Date() } });
+      await this.prisma.supplier.update({ where: { id, companyId: tenantId }, data: { status: "INACTIVE", deletedAt: new Date() } });
 
       return { deleted: true, softDelete: true };
     }
 
-    await this.prisma.supplier.delete({ where: { id, companyId: this.requireCompany(companyId) } });
+    await this.prisma.supplier.delete({ where: { id, companyId: tenantId } });
 
     return { deleted: true, softDelete: false };
   }
@@ -861,14 +980,30 @@ async createCategory(companyId: string, body: any) {
   }
 
   async getPurchase(companyId: string, id: string) {
+    const tenantId = this.requireCompany(companyId);
     const purchase = await this.prisma.purchase.findFirst({
-      where: { id, companyId: this.requireCompany(companyId) },
+      where: { id, companyId: tenantId },
       include: { items: true, supplier: true, warehouse: true },
     });
 
     if (!purchase) throw new NotFoundException({ code: "PURCHASE_NOT_FOUND", message: "Xarid topilmadi." });
 
-    return this.purchaseDto(purchase);
+    const movements = await this.prisma.stockMovement.findMany({
+      where: { companyId: tenantId, sourceType: "PURCHASE", sourceId: id },
+      include: { batch: true },
+      orderBy: { createdAt: "asc" },
+    });
+
+    const batches = movements
+      .filter((movement) => movement.batch)
+      .map((movement) => ({
+        ...this.batchDto(movement.batch),
+        movementId: movement.id,
+        productId: movement.productId,
+        movementQuantity: decimalToNumber(movement.quantity),
+      }));
+
+    return this.purchaseDto({ ...purchase, batches });
   }
 
   async createPurchase(companyId: string, body: any) {
@@ -878,7 +1013,11 @@ async createCategory(companyId: string, body: any) {
     await this.validateProductIds(this.prisma, tenantId, productIds);
     const items = this.normalizePurchaseItems(body.items || [], new Map(productRecords.map((product) => [product.id, product])));
     const total = roundMoney(items.reduce((sum, item) => sum + item.subtotal, 0));
-    const paidAmount = roundMoney(body.paidAmount || body.payments?.reduce((sum: number, payment: any) => sum + toNumber(payment.amount), 0));
+    const requestedPaidAmount = roundMoney(body.paidAmount || body.payments?.reduce((sum: number, payment: any) => sum + toNumber(payment.amount), 0));
+    if (requestedPaidAmount > 0) {
+      throw new ConflictException({ code: "PURCHASE_NOT_RECEIVED", message: "To'lov qilishdan oldin xaridni qabul qiling." });
+    }
+    const paidAmount = 0;
     // A purchase order is not supplier debt until goods are received.
     // The liability is posted from received quantities in receivePurchase().
     const debtAmount = 0;
@@ -921,21 +1060,6 @@ async createCategory(companyId: string, body: any) {
         },
         include: { items: true },
       });
-
-      if (paidAmount > 0) {
-        await this.createFinanceTx(tx, tenantId, {
-          type: "OUT",
-          amount: paidAmount,
-          category: "SUPPLIER_PAYMENT",
-          sourceType: "PURCHASE",
-          sourceId: created.id,
-          idempotencyKey: `purchase-payment:${created.id}:initial`,
-          purchaseId: created.id,
-          supplierId: supplier?.id,
-          method: body.paymentMethod || body.payments?.[0]?.method || "CASH",
-          description: `Purchase ${created.number}`,
-        });
-      }
 
       return created;
     });
@@ -980,7 +1104,8 @@ async createCategory(companyId: string, body: any) {
           note: body.note,
           subtotal: total,
           total,
-          debtAmount: total === undefined ? undefined : Math.max(total - toNumber(existing.paidAmount), 0),
+          paidAmount: total === undefined ? undefined : 0,
+          debtAmount: total === undefined ? undefined : 0,
           items: items ? { create: items } : undefined,
         },
         include: { items: true },
@@ -1000,8 +1125,17 @@ async createCategory(companyId: string, body: any) {
         throw new ConflictException({ code: "PURCHASE_RECEIVE_BLOCKED", message: "Bu xaridni qabul qilib bo'lmaydi." });
       }
 
-      const receivedItems = Array.isArray(body.receivedItems) ? body.receivedItems : purchase.items.map((item) => ({ productId: item.productId, purchaseItemId: item.id, quantity: Math.max(toNumber(item.quantity) - toNumber(item.receivedQuantity), 0) }));
-      const receiveKey = body.idempotencyKey || `purchase-receive:${purchase.id}:${receivedItems.map((item: any) => `${item.purchaseItemId || item.productId}:${item.quantity}`).join(",")}`;
+      const company = await tx.company.findUnique({ where: { id: tenantId }, select: { currency: true } });
+      const currency = normalizeCurrency(body.currency || company?.currency || "UZS");
+      const receivedItems = Array.isArray(body.receivedItems)
+        ? body.receivedItems
+        : purchase.items.map((item) => ({
+          productId: item.productId,
+          purchaseItemId: item.id,
+          quantity: Math.max(toNumber(item.purchaseQuantity ?? item.quantity) - convertQuantity(toNumber(item.receivedQuantity), item.unit, item.purchaseUnit || item.unit), 0),
+          unit: item.purchaseUnit || item.unit,
+        }));
+      const receiveKey = body.idempotencyKey || `purchase-receive:${purchase.id}:${receivedItems.map((item: any) => `${item.purchaseItemId || item.productId}:${item.quantity}:${item.unit || ""}`).join(",")}`;
       const previousReceive = await tx.stockMovement.findFirst({ where: { companyId: tenantId, sourceType: "PURCHASE", sourceId: purchase.id, idempotencyKey: { startsWith: receiveKey } } });
       if (previousReceive) {
         const fresh = await tx.purchase.findFirst({ where: { id: purchase.id, companyId: tenantId }, include: { items: true } });
@@ -1013,21 +1147,24 @@ async createCategory(companyId: string, body: any) {
       for (const received of receivedItems) {
         const item = purchase.items.find((entry) => entry.id === received.purchaseItemId || entry.productId === received.productId);
         if (!item) continue;
-        const amount = parseQuantity(received.quantity ?? 0, "Qabul miqdori");
+        const receiveUnit = normalizeUnit(received.unit || item.purchaseUnit || item.unit);
+        const amount = roundQuantity(convertQuantity(parseQuantity(received.quantity ?? 0, "Qabul miqdori"), receiveUnit, item.unit));
         const remaining = toNumber(item.quantity) - toNumber(item.receivedQuantity);
         if (amount <= 0) continue;
         if (amount > remaining) throw new ConflictException({ code: "DUPLICATE_RECEIVE", message: "Qabul miqdori qoldiqdan oshmasin." });
 
         await tx.purchaseItem.update({ where: { id: item.id }, data: { receivedQuantity: { increment: amount } } });
         if (item.productId) {
+          const receivedValue = roundMoney(amount * toNumber(item.cost), 6);
           await this.adjustStockDelta(tx, tenantId, warehouseId, item.productId, amount, {
             type: "IN",
             reason: "PURCHASE_RECEIVE",
             sourceType: "PURCHASE",
             sourceId: purchase.id,
-            cost: toNumber(item.cost),
+            totalCost: receivedValue,
             batchNumber: received.batchNumber,
             expiryDate: received.expiryDate || body.expiryDate,
+            productionDate: received.productionDate || body.productionDate,
             receivedDate: body.receivedDate || new Date(),
             idempotencyKey: `${receiveKey}:${item.id}`,
           });
@@ -1038,7 +1175,11 @@ async createCategory(companyId: string, body: any) {
               productId: item.productId,
               unit: item.unit,
               price: item.cost,
-              currency: body.currency || "UZS",
+              purchaseUnit: receiveUnit,
+              purchaseQuantity: parseQuantity(received.quantity ?? 0, "Qabul miqdori"),
+              canonicalUnit: item.unit,
+              canonicalUnitPrice: item.cost,
+              currency,
               sourceType: "PURCHASE_RECEIVE",
               sourceId: purchase.id,
             },
@@ -1092,14 +1233,17 @@ async createCategory(companyId: string, body: any) {
         return this.purchaseDto(existingPurchase);
       }
 
-      const purchase = await tx.purchase.findFirst({ where: { id, companyId: tenantId } });
+      const purchase = await tx.purchase.findFirst({ where: { id, companyId: tenantId }, include: { items: true } });
       if (!purchase) throw new NotFoundException({ code: "PURCHASE_NOT_FOUND", message: "Xarid topilmadi." });
       if (!["PARTIALLY_RECEIVED", "RECEIVED"].includes(purchase.status)) {
         throw new ConflictException({ code: "PURCHASE_NOT_RECEIVED", message: "Avval xaridni qabul qiling." });
       }
       if (amount > toNumber(purchase.debtAmount)) throw new BadRequestException({ code: "OVERPAYMENT", message: "To'lov qarz summasidan oshmasin." });
       const nextPaid = roundMoney(toNumber(purchase.paidAmount) + amount);
-      const nextDebt = roundMoney(Math.max(toNumber(purchase.total) - nextPaid, 0));
+      const receivedTotal = roundMoney(
+        purchase.items.reduce((sum, item) => sum + toNumber(item.receivedQuantity) * toNumber(item.cost), 0),
+      );
+      const nextDebt = roundMoney(Math.max(receivedTotal - nextPaid, 0));
       const updated = await tx.purchase.update({
         where: { id, companyId: tenantId },
         data: { paidAmount: nextPaid, debtAmount: nextDebt },
@@ -1130,7 +1274,7 @@ async createCategory(companyId: string, body: any) {
   async cancelPurchase(companyId: string, id: string) {
     const tenantId = this.requireCompany(companyId);
     const purchase = await this.getPurchase(tenantId, id);
-    if (purchase.status === "RECEIVED") throw new ConflictException({ code: "PURCHASE_RECEIVED", message: "Qabul qilingan xarid bekor qilinmaydi." });
+    if (["PARTIALLY_RECEIVED", "RECEIVED"].includes(purchase.status)) throw new ConflictException({ code: "PURCHASE_RECEIVED", message: "Qabul qilingan xarid bekor qilinmaydi." });
     const updated = await this.prisma.$transaction(async (tx) => {
       const result = await tx.purchase.update({ where: { id, companyId: tenantId }, data: { status: "CANCELLED", cancelledAt: new Date() }, include: { items: true } });
       if (purchase.supplierId && toNumber(purchase.debtAmount) > 0) {
@@ -1653,7 +1797,11 @@ async createCategory(companyId: string, body: any) {
   }
 
   async listBoms(companyId: string) {
-    const boms = await this.prisma.bom.findMany({ where: { companyId: this.requireCompany(companyId) }, include: { materials: true, outputProduct: true }, orderBy: [{ versionGroupId: "asc" }, { version: "desc" }] });
+    const boms = await this.prisma.bom.findMany({
+      where: { companyId: this.requireCompany(companyId) },
+      include: { materials: true, outputProduct: true },
+      orderBy: [{ versionGroupId: "asc" }, { version: "desc" }],
+    });
 
     const data = boms.map((bom) => this.bomDto(bom));
     return { boms: data, data };
@@ -1662,12 +1810,17 @@ async createCategory(companyId: string, body: any) {
   async createBom(companyId: string, body: any) {
     const tenantId = this.requireCompany(companyId);
     const materials = Array.isArray(body.materials) ? body.materials : Array.isArray(body.items) ? body.items : [];
+    if (!materials.length) throw new BadRequestException({ code: "RECIPE_MATERIALS_REQUIRED", message: "Retseptda kamida bitta xomashyo bo'lishi kerak." });
+    const outputQuantity = parseQuantity(body.outputQuantity ?? body.quantity, "Chiqish miqdori");
+    if (outputQuantity <= 0) throw new BadRequestException({ code: "INVALID_OUTPUT_QUANTITY", message: "Chiqish miqdori 0 dan katta bo'lishi kerak." });
+
     const bom = await this.prisma.$transaction(async (tx) => {
       const output = await this.ensureProduct(tx, tenantId, body.outputProductId || body.productId, body.outputProductName || body.productName, "FINISHED_GOOD", body.unit);
       const materialData: any[] = [];
       for (const item of materials) {
         const material = await this.ensureProduct(tx, tenantId, item.productId, item.productName || item.name, "RAW_MATERIAL", item.unit);
         const recipeMaterial = this.normalizeBomMaterial(material, item);
+        convertQuantity(recipeMaterial.quantity, recipeMaterial.unit, material.unit);
         materialData.push({
           productId: material.id,
           productName: material.name,
@@ -1682,7 +1835,7 @@ async createCategory(companyId: string, body: any) {
           name: String(body.name || "Retsept").trim(),
           outputProductId: output.id,
           outputProductName: output.name,
-          outputQuantity: parseQuantity(body.outputQuantity ?? body.quantity ?? 1, "Chiqish miqdori"),
+          outputQuantity,
           unit: output.unit,
           overheadCost: roundMoney(body.overheadCost),
           status: body.status || "ACTIVE",
@@ -1700,7 +1853,7 @@ async createCategory(companyId: string, body: any) {
 
   async getBom(companyId: string, id: string) {
     const bom = await this.prisma.bom.findFirst({ where: { id, companyId: this.requireCompany(companyId) }, include: { materials: true, outputProduct: true } });
-    if (!bom) throw new NotFoundException({ code: "BOM_NOT_FOUND", message: "BOM topilmadi." });
+    if (!bom) throw new NotFoundException({ code: "RECIPE_NOT_FOUND", message: "Retsept topilmadi." });
     return this.bomDto(bom);
   }
 
@@ -1709,17 +1862,24 @@ async createCategory(companyId: string, body: any) {
     const current = await this.prisma.bom.findFirst({ where: { id, companyId: tenantId }, include: { materials: true } });
     if (!current) throw new NotFoundException({ code: "RECIPE_NOT_FOUND", message: "Retsept topilmadi." });
     const materials = Array.isArray(body.materials || body.items) ? (body.materials || body.items) : current.materials;
-    if (Array.isArray(materials)) {
-      await this.validateProductIds(this.prisma, tenantId, [body.outputProductId || body.productId, ...materials.map((item: any) => item.productId)]);
-    }
+    if (!materials.length) throw new BadRequestException({ code: "RECIPE_MATERIALS_REQUIRED", message: "Retseptda kamida bitta xomashyo bo'lishi kerak." });
     const outputProduct = body.outputProductId || body.productId
       ? await this.prisma.product.findFirst({ where: { id: body.outputProductId || body.productId, companyId: tenantId, deletedAt: null } })
       : await this.prisma.product.findFirst({ where: { id: current.outputProductId || "", companyId: tenantId, deletedAt: null } });
     if ((body.outputProductId || body.productId) && !outputProduct) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: "Mahsulot topilmadi." });
-    const materialProducts = materials.length
-      ? await this.prisma.product.findMany({ where: { companyId: tenantId, id: { in: materials.map((item: any) => item.productId).filter(Boolean) }, deletedAt: null } })
-      : [];
+    const outputQuantity = body.outputQuantity === undefined && body.quantity === undefined ? toNumber(current.outputQuantity) : parseQuantity(body.outputQuantity ?? body.quantity, "Chiqish miqdori");
+    if (outputQuantity <= 0) throw new BadRequestException({ code: "INVALID_OUTPUT_QUANTITY", message: "Chiqish miqdori 0 dan katta bo'lishi kerak." });
+
+    const materialProducts = await this.prisma.product.findMany({
+      where: { companyId: tenantId, id: { in: materials.map((item: any) => item.productId).filter(Boolean) }, deletedAt: null },
+    });
     const materialMap = new Map(materialProducts.map((product) => [product.id, product]));
+    for (const item of materials) {
+      const product = materialMap.get(item.productId);
+      if (!product) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: `Retseptdagi "${item.productName || item.name || item.productId}" mahsuloti topilmadi. Retseptni yangilang.` });
+      convertQuantity(parseQuantity(item.quantity, "Xomashyo miqdori"), item.unit || product.unit, product.unit);
+    }
+
     const bom = await this.prisma.$transaction(async (tx) => {
       await tx.bom.update({ where: { id, companyId: tenantId }, data: { status: "INACTIVE" } });
       return tx.bom.create({
@@ -1728,8 +1888,8 @@ async createCategory(companyId: string, body: any) {
           companyId: tenantId,
           outputProductId: outputProduct?.id || current.outputProductId,
           outputProductName: outputProduct?.name || body.outputProductName || body.productName || current.outputProductName,
-          outputQuantity: body.outputQuantity === undefined && body.quantity === undefined ? current.outputQuantity : parseQuantity(body.outputQuantity ?? body.quantity, "Chiqish miqdori"),
-          unit: outputProduct?.unit || (body.unit === undefined ? current.unit : normalizeUnit(body.unit)),
+          outputQuantity,
+          unit: outputProduct?.unit || current.unit,
           overheadCost: body.overheadCost === undefined ? current.overheadCost : roundMoney(body.overheadCost),
           status: body.status || "ACTIVE",
           version: current.version + 1,
@@ -1740,7 +1900,7 @@ async createCategory(companyId: string, body: any) {
               const product = materialMap.get(item.productId);
               const recipeMaterial = this.normalizeBomMaterial(product, item);
               return {
-                productId: item.productId || null,
+                productId: product?.id || null,
                 productName: product?.name || item.productName || item.name || "Material",
                 quantity: recipeMaterial.quantity,
                 unit: recipeMaterial.unit,
@@ -1763,62 +1923,142 @@ async createCategory(companyId: string, body: any) {
     return { deleted: true, softDelete: true };
   }
 
-  async listProductionOrders(companyId: string) {
-    const orders = await this.prisma.productionOrder.findMany({ where: { companyId: this.requireCompany(companyId) }, include: { bom: { include: { materials: true } }, stages: true }, orderBy: { createdAt: "desc" } });
+  async listProductionOrders(companyId: string, query: Record<string, string | undefined> = {}) {
+    const tenantId = this.requireCompany(companyId);
+    const { page, limit, skip, take } = getPagination(Number(query.page), Number(query.limit || 50));
+    const where: any = { companyId: tenantId };
+    if (query.status) where.status = query.status;
+    if (query.recipe || query.bomId) where.bomId = query.recipe || query.bomId;
+    if (query.product || query.productId) where.outputProductId = query.product || query.productId;
+    if (query.search?.trim()) {
+      const search = query.search.trim();
+      where.OR = [
+        { number: { contains: search, mode: "insensitive" } },
+        { outputProductName: { contains: search, mode: "insensitive" } },
+      ];
+    }
+    if (query.dateFrom || query.dateTo) {
+      where.createdAt = {};
+      if (query.dateFrom) where.createdAt.gte = parseOptionalDate(query.dateFrom);
+      if (query.dateTo) where.createdAt.lte = parseOptionalDate(query.dateTo);
+    }
+
+    const [orders, total] = await this.prisma.$transaction([
+      this.prisma.productionOrder.findMany({ where, include: { bom: { include: { materials: true, outputProduct: true } }, stages: true }, orderBy: { createdAt: "desc" }, skip, take }),
+      this.prisma.productionOrder.count({ where }),
+    ]);
     const data = orders.map((order) => this.safeProductionOrderDto(order));
-    return { orders: data, productionOrders: data, data };
+    return { orders: data, productionOrders: data, data, meta: getPaginationMeta(page, limit, total) };
+  }
+
+  async getProductionMaterialAvailability(companyId: string, body: any) {
+    const tenantId = this.requireCompany(companyId);
+    const warehouseId = body.materialWarehouseId || body.warehouseId || (await this.ensureDefaultWarehouse(tenantId)).id;
+    const plannedQuantity = parseQuantity(body.plannedQuantity ?? body.quantity, "Rejalashtirilgan miqdor");
+    if (plannedQuantity <= 0) throw new BadRequestException({ code: "INVALID_PLANNED_QUANTITY", message: "Reja miqdori 0 dan katta bo'lishi kerak." });
+
+    return this.prisma.$transaction(async (tx) => {
+      await this.requireWarehouse(tx, tenantId, warehouseId);
+      const recipeSnapshot = body.recipeSnapshot || await this.getRecipeSnapshot(tx, tenantId, body.bomId || body.recipeId);
+      const requiredMaterials = await this.resolveProductionRequirements(tx, tenantId, recipeSnapshot, plannedQuantity);
+      const materials = await this.getMaterialAvailabilityInTx(tx, tenantId, warehouseId, requiredMaterials);
+      return {
+        warehouseId,
+        plannedQuantity,
+        recipeSnapshot,
+        materials,
+        enough: materials.length > 0 && materials.every((item) => item.enough),
+      };
+    });
   }
 
   async createProductionOrder(companyId: string, body: any) {
     const tenantId = this.requireCompany(companyId);
-    const bom = body.bomId ? await this.prisma.bom.findFirst({ where: { id: body.bomId, companyId: tenantId }, include: { materials: true } }) : null;
-    if (body.bomId && !bom) throw new NotFoundException({ code: "BOM_NOT_FOUND", message: "BOM topilmadi." });
-    const outputProductId = body.outputProductId || bom?.outputProductId;
-    const output = outputProductId
-      ? await this.prisma.product.findFirst({ where: { id: outputProductId, companyId: tenantId, deletedAt: null } })
-      : null;
-    if (outputProductId && !output) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: "Mahsulot topilmadi." });
-    if (body.warehouseId) await this.requireWarehouse(this.prisma, tenantId, body.warehouseId);
-    const productionWarehouseId = body.warehouseId || (await this.ensureDefaultWarehouse(tenantId)).id;
+    const defaultWarehouseId = (await this.ensureDefaultWarehouse(tenantId)).id;
+    const materialWarehouseId = body.materialWarehouseId || body.warehouseId || defaultWarehouseId;
+    const outputWarehouseId = body.outputWarehouseId || body.warehouseId || defaultWarehouseId;
+    const plannedQuantity = parseQuantity(body.plannedQuantity ?? body.quantity, "Rejalashtirilgan miqdor");
+    if (plannedQuantity <= 0) throw new BadRequestException({ code: "INVALID_PLANNED_QUANTITY", message: "Reja miqdori 0 dan katta bo'lishi kerak." });
+
     const company = await this.prisma.company.findFirst({ where: { id: tenantId }, select: { currency: true } });
     const overhead = this.normalizeOverheadItems(body.overheadItems);
-    const recipeSnapshot = bom ? {
-      id: bom.id,
-      version: bom.version,
-      name: bom.name,
-      outputQuantity: toNumber(bom.outputQuantity),
-      unit: bom.unit,
-      normalWastePercent: bom.normalWastePercent === null || bom.normalWastePercent === undefined ? (output?.normalWastePercent === null || output?.normalWastePercent === undefined ? null : toNumber(output.normalWastePercent)) : toNumber(bom.normalWastePercent),
-      materials: bom.materials.map((material: any) => ({ productId: material.productId, productName: material.productName, quantity: toNumber(material.quantity), unit: material.unit, cost: toNumber(material.cost) })),
-    } : null;
-    const requestedStages = Array.isArray(body.stages) ? body.stages : [];
-    const stages = requestedStages.length ? requestedStages : ["Tayyorlash", "Ishlab chiqarish", "Sifat nazorati"];
-    const order = await this.prisma.productionOrder.create({
-      data: {
-        companyId: tenantId,
-        number: body.number || (await this.generateNumber(this.prisma, tenantId, "production")),
-        bomId: bom?.id || null,
-        outputProductId: output?.id || null,
-        outputProductName: output?.name || body.outputProductName || bom?.outputProductName,
-        unit: output?.unit || bom?.unit || normalizeUnit(body.unit),
-        plannedQuantity: parseQuantity(body.plannedQuantity ?? body.quantity ?? 1, "Rejalashtirilgan miqdor"),
-        warehouseId: productionWarehouseId,
-        overheadCost: overhead.total || roundMoney(body.overheadCost ?? bom?.overheadCost),
-        overheadItems: overhead.items,
-        recipeVersion: bom?.version || null,
-        recipeSnapshot: recipeSnapshot || undefined,
-        packaging: Array.isArray(body.packaging) ? body.packaging : [],
-        currency: normalizeCurrency(body.currency ?? company?.currency ?? "UZS"),
-        status: body.status || "PLANNED",
-        note: body.note,
-        stages: {
-          create: stages.map((stage: any) => ({
-            name: stage.name || String(stage),
-            status: stage.status === "PENDING" ? "PLANNED" : stage.status || "PLANNED",
-          })),
+    const order = await this.prisma.$transaction(async (tx) => {
+      await this.requireWarehouse(tx, tenantId, materialWarehouseId);
+      await this.requireWarehouse(tx, tenantId, outputWarehouseId);
+      const recipeSnapshot = await this.getRecipeSnapshot(tx, tenantId, body.bomId || body.recipeId);
+      const output = recipeSnapshot.outputProductId
+        ? await tx.product.findFirst({ where: { id: recipeSnapshot.outputProductId, companyId: tenantId, deletedAt: null } })
+        : null;
+      if (!output) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: "Retseptdagi tayyor mahsulot topilmadi. Retseptni yangilang." });
+      const requiredMaterials = await this.resolveProductionRequirements(tx, tenantId, recipeSnapshot, plannedQuantity);
+      const availability = await this.getMaterialAvailabilityInTx(tx, tenantId, materialWarehouseId, requiredMaterials);
+      const enough = availability.every((item) => item.enough);
+      const requestedStages = Array.isArray(body.stages) ? body.stages : [];
+      const stages = requestedStages.length ? requestedStages : ["Tayyorlash", "Ishlab chiqarish", "Sifat nazorati", "Qadoqlash"];
+      const materialSnapshot = availability.map((item) => ({
+        ...item,
+        plannedQuantity: item.requiredQuantity,
+        actualQuantity: item.requiredQuantity,
+        reservedQuantity: 0,
+        reservationStatus: enough ? "PENDING" : "SHORTAGE",
+      }));
+      const created = await tx.productionOrder.create({
+        data: {
+          companyId: tenantId,
+          number: body.number || (await this.generateNumber(tx, tenantId, "production")),
+          bomId: recipeSnapshot.id,
+          outputProductId: output.id,
+          outputProductName: output.name,
+          unit: output.unit,
+          plannedQuantity,
+          warehouseId: materialWarehouseId,
+          materialWarehouseId,
+          outputWarehouseId,
+          overheadCost: overhead.total || roundMoney(body.overheadCost ?? recipeSnapshot.overheadCost),
+          overheadItems: overhead.items,
+          recipeVersion: recipeSnapshot.version || null,
+          recipeSnapshot,
+          materialSnapshot,
+          packaging: Array.isArray(body.packaging) ? body.packaging : [],
+          currency: normalizeCurrency(body.currency ?? company?.currency ?? "UZS"),
+          status: "PLANNED",
+          note: body.note,
+          plannedDate: parseOptionalDate(body.plannedDate),
+          dueDate: parseOptionalDate(body.dueDate),
+          priority: body.priority || null,
+          responsible: body.responsible || body.responsibleEmployee || null,
+          stages: {
+            create: stages.map((stage: any) => ({
+              name: stage.name || String(stage),
+              status: stage.status === "PENDING" ? "PLANNED" : stage.status || "PLANNED",
+              notes: stage.note || stage.notes || null,
+            })),
+          },
         },
-      },
-      include: { bom: { include: { materials: true } }, stages: true },
+        include: { bom: { include: { materials: true, outputProduct: true } }, stages: true },
+      });
+
+      if (enough) {
+        const reservedSnapshot: any[] = [];
+        for (const material of materialSnapshot) {
+          await this.reserveStockInTx(tx, tenantId, {
+            warehouseId: materialWarehouseId,
+            productId: material.productId,
+            quantity: material.requiredQuantity,
+            unit: material.unit,
+            sourceType: "PRODUCTION",
+            sourceId: created.id,
+          });
+          reservedSnapshot.push({ ...material, reservedQuantity: material.requiredQuantity, reservationStatus: "RESERVED" });
+        }
+        return tx.productionOrder.update({
+          where: { id: created.id, companyId: tenantId },
+          data: { materialSnapshot: reservedSnapshot },
+          include: { bom: { include: { materials: true, outputProduct: true } }, stages: true },
+        });
+      }
+
+      return created;
     });
     return this.productionOrderDto(order);
   }
@@ -1826,91 +2066,97 @@ async createCategory(companyId: string, body: any) {
   async startProduction(companyId: string, id: string, body: any, actorUserId?: string) {
     const tenantId = this.requireCompany(companyId);
     return this.prisma.$transaction(async (tx) => {
-      const order = await tx.productionOrder.findFirst({ where: { id, companyId: tenantId }, include: { bom: { include: { materials: true } }, stages: true } });
+      const order = await tx.productionOrder.findFirst({ where: { id, companyId: tenantId }, include: { bom: { include: { materials: true, outputProduct: true } }, stages: true } });
       if (!order) throw new NotFoundException({ code: "PRODUCTION_NOT_FOUND", message: "Ishlab chiqarish topilmadi." });
-      if (order.status === "IN_PROGRESS") return this.productionOrderDto(order);
+      if (order.status === "IN_PROGRESS") throw new ConflictException({ code: "PRODUCTION_ALREADY_STARTED", message: "Ishlab chiqarish allaqachon boshlangan." });
       if (order.status === "COMPLETED" || order.status === "CANCELLED") throw new ConflictException({ code: "PRODUCTION_LOCKED", message: "Bu buyurtmani start qilib bo'lmaydi." });
-      if (!order.bom) throw new BadRequestException({ code: "BOM_REQUIRED", message: "BOM topilmadi." });
-      const warehouseId = body.warehouseId || order.warehouseId || (await this.ensureDefaultWarehouse(tenantId)).id;
-      const startedAt = new Date();
-      const materialProductIds = order.bom.materials.map((material) => material.productId).filter(Boolean) as string[];
-      const materialProducts = await tx.product.findMany({
-        where: { companyId: tenantId, id: { in: materialProductIds }, deletedAt: null },
-        select: { id: true, name: true, unit: true, cost: true },
-      });
-      const productMap = new Map(materialProducts.map((product) => [product.id, product]));
-      const resolvedMaterials: Array<{ material: any; product: any }> = [];
+      if (order.status !== "PLANNED") throw new ConflictException({ code: "PRODUCTION_STATE_INVALID", message: "Faqat rejalashtirilgan ishlab chiqarishni boshlash mumkin." });
 
-      for (const material of order.bom.materials) {
-        let product = material.productId ? productMap.get(material.productId) : null;
+      const materialWarehouseId = body.materialWarehouseId || body.warehouseId || order.materialWarehouseId || order.warehouseId || (await this.ensureDefaultWarehouse(tenantId)).id;
+      const outputWarehouseId = body.outputWarehouseId || order.outputWarehouseId || order.warehouseId || materialWarehouseId;
+      await this.requireWarehouse(tx, tenantId, materialWarehouseId);
+      await this.requireWarehouse(tx, tenantId, outputWarehouseId);
 
-        if (!product && !material.productId && material.productName) {
-          product = await tx.product.findFirst({
-            where: { companyId: tenantId, name: { equals: material.productName, mode: "insensitive" }, deletedAt: null },
-            select: { id: true, name: true, unit: true, cost: true },
-          });
+      const recipeSnapshot = await this.ensureOrderRecipeSnapshot(tx, tenantId, order);
+      const plannedQuantity = toNumber(order.plannedQuantity);
+      const baseRequirements = Array.isArray(order.materialSnapshot) && (order.materialSnapshot as any[]).length
+        ? (order.materialSnapshot as any[])
+        : await this.resolveProductionRequirements(tx, tenantId, recipeSnapshot, plannedQuantity);
+      const requirements = await this.normalizeSnapshotRequirements(tx, tenantId, baseRequirements, recipeSnapshot, plannedQuantity);
+      const availability = await this.getMaterialAvailabilityInTx(tx, tenantId, materialWarehouseId, requirements);
+
+      for (const material of availability) {
+        const reservedQuantity = toNumber((requirements.find((item: any) => item.productId === material.productId) as any)?.reservedQuantity);
+        const missingReservation = roundQuantity(material.requiredQuantity - reservedQuantity);
+        if (missingReservation > 0) {
+          if (missingReservation > material.availableQuantity) {
+            throw new ConflictException({
+              code: "INSUFFICIENT_AVAILABLE_STOCK",
+              message: `${material.productName} yetarli emas. Kerak: ${missingReservation} ${material.unit}. Mavjud: ${material.availableQuantity} ${material.unit}.`,
+              details: availability,
+            });
+          }
+          await this.reserveStockInTx(tx, tenantId, {
+            warehouseId: materialWarehouseId,
+            productId: material.productId,
+            quantity: missingReservation,
+            unit: material.unit,
+            sourceType: "PRODUCTION",
+            sourceId: order.id,
+          }, actorUserId);
         }
-
-        if (!product) {
-          const label = material.productName || material.productId || "Noma'lum xomashyo";
-          const suffix = material.productId ? ` (productId: ${material.productId})` : "";
-          throw new NotFoundException({
-            code: "PRODUCTION_MATERIAL_NOT_FOUND",
-            message: `Retseptdagi "${label}" xomashyosi mahsulotlar ro'yxatida topilmadi${suffix}. Retseptni yangilang.`,
-          });
-        }
-
-        resolvedMaterials.push({ material, product });
       }
 
       const claimed = await tx.productionOrder.updateMany({
         where: { id, companyId: tenantId, status: "PLANNED" },
-        data: { status: "IN_PROGRESS", startedAt, warehouseId },
+        data: { status: "IN_PROGRESS", startedAt: new Date(), warehouseId: materialWarehouseId, materialWarehouseId, outputWarehouseId },
       });
-      if (claimed.count !== 1) {
-        const current = await tx.productionOrder.findFirst({ where: { id, companyId: tenantId }, include: { bom: { include: { materials: true } }, stages: true } });
-        if (current?.status === "IN_PROGRESS") return this.productionOrderDto(current);
-        throw new ConflictException({ code: "PRODUCTION_STATE_CHANGED", message: "Ishlab chiqarish holati o'zgargan. Sahifani yangilang." });
-      }
+      if (claimed.count !== 1) throw new ConflictException({ code: "PRODUCTION_STATE_CHANGED", message: "Ishlab chiqarish holati o'zgargan. Sahifani yangilang." });
+
       const materialSnapshot: any[] = [];
       let materialCost = 0;
-      for (const { material, product } of resolvedMaterials) {
-        const baseUnit = product.unit;
-        const recipeQuantity = convertQuantity(toNumber(material.quantity), material.unit, baseUnit);
-        const qty = roundQuantity(recipeQuantity * toNumber(order.plannedQuantity) / Math.max(toNumber(order.bom.outputQuantity), 1));
-        const cost = toNumber(product.cost ?? material.cost);
-        materialSnapshot.push({
-          productId: product.id,
-          productName: product.name || material.productName,
-          plannedQuantity: qty,
-          actualQuantity: qty,
-          unit: baseUnit,
-          cost,
-          recipeMaterialId: material.id,
-        });
-        await this.adjustStockDelta(tx, tenantId, warehouseId, product.id, -qty, {
-          type: "CONSUME",
-          reason: "PRODUCTION_START",
+      for (const material of requirements) {
+        const qty = parseQuantity(material.requiredQuantity ?? material.plannedQuantity, "Reja xomashyo miqdori");
+        const allocations = await this.consumeReservedStockInTx(tx, tenantId, {
+          warehouseId: materialWarehouseId,
+          productId: material.productId,
+          quantity: qty,
+          unit: material.unit,
           sourceType: "PRODUCTION",
           sourceId: order.id,
-          idempotencyKey: `production-start:${order.id}:${product.id}`,
+          reason: "PRODUCTION_START",
+          idempotencyKey: `production-start:${order.id}:${material.productId}`,
+        }, actorUserId);
+        const actualCost = this.sumAllocationCost(allocations);
+        const cost = qty > 0 ? roundMoney(actualCost / qty, 6) : toNumber(material.cost);
+        materialCost += actualCost;
+        materialSnapshot.push({
+          ...material,
+          plannedQuantity: qty,
+          actualQuantity: qty,
+          reservedQuantity: 0,
+          consumedQuantity: qty,
+          unit: material.unit,
+          cost,
+          actualCost: roundMoney(actualCost, 6),
+          allocations,
+          reservationStatus: "CONSUMED",
         });
-        materialCost += qty * cost;
       }
+
       const updated = await tx.productionOrder.update({
         where: { id, companyId: tenantId },
         data: {
           status: "IN_PROGRESS",
-          startedAt,
-          warehouseId,
           materialCost: roundMoney(materialCost),
           productionCost: roundMoney(materialCost + toNumber(order.overheadCost)),
           materialSnapshot,
-          costingPolicy: "CURRENT_AT_START",
+          recipeSnapshot,
+          costingPolicy: "BATCH_ACTUAL",
         },
-        include: { bom: { include: { materials: true } }, stages: true },
+        include: { bom: { include: { materials: true, outputProduct: true } }, stages: true },
       });
-      await this.writeAudit(tx, tenantId, actorUserId, "production.start", "production_order", order.id, { status: order.status, materialSnapshot });
+      await this.writeAudit(tx, tenantId, actorUserId, "production.start", "production_order", order.id, { materialWarehouseId, outputWarehouseId, materialSnapshot });
       return this.productionOrderDto(updated);
     });
   }
@@ -1918,147 +2164,218 @@ async createCategory(companyId: string, body: any) {
   async completeProduction(companyId: string, id: string, body: any, actorUserId?: string) {
     const tenantId = this.requireCompany(companyId);
     return this.prisma.$transaction(async (tx) => {
-      const order = await tx.productionOrder.findFirst({ where: { id, companyId: tenantId }, include: { bom: { include: { materials: true } } } });
+      const order = await tx.productionOrder.findFirst({ where: { id, companyId: tenantId }, include: { bom: { include: { materials: true, outputProduct: true } }, stages: true } });
       if (!order) throw new NotFoundException({ code: "PRODUCTION_NOT_FOUND", message: "Ishlab chiqarish topilmadi." });
-      if (order.status === "COMPLETED") return this.productionOrderDto(order);
+      if (order.status === "COMPLETED") throw new ConflictException({ code: "PRODUCTION_ALREADY_COMPLETED", message: "Ishlab chiqarish allaqachon yakunlangan." });
       if (order.status === "CANCELLED") throw new ConflictException({ code: "PRODUCTION_CANCELLED", message: "Bekor qilingan buyurtma yakunlanmaydi." });
       if (order.status !== "IN_PROGRESS") throw new ConflictException({ code: "PRODUCTION_NOT_STARTED", message: "Avval ishlab chiqarishni boshlang." });
-      const warehouseId = body.warehouseId || order.warehouseId || (await this.ensureDefaultWarehouse(tenantId)).id;
-      const actualQuantity = parseQuantity(body.producedQuantity ?? body.actualQuantity ?? body.quantity ?? order.plannedQuantity, "Ishlab chiqarilgan miqdor");
-      if (!order.outputProductId) throw new BadRequestException({ code: "OUTPUT_PRODUCT_REQUIRED", message: "Output product kerak." });
+      if (!order.outputProductId) throw new BadRequestException({ code: "OUTPUT_PRODUCT_REQUIRED", message: "Tayyor mahsulot kerak." });
+
+      const materialWarehouseId = body.materialWarehouseId || order.materialWarehouseId || order.warehouseId || (await this.ensureDefaultWarehouse(tenantId)).id;
+      const outputWarehouseId = body.outputWarehouseId || order.outputWarehouseId || order.warehouseId || materialWarehouseId;
+      await this.requireWarehouse(tx, tenantId, materialWarehouseId);
+      await this.requireWarehouse(tx, tenantId, outputWarehouseId);
+
+      const producedQuantity = parseQuantity(body.producedQuantity ?? body.actualQuantity ?? body.quantity ?? order.plannedQuantity, "Ishlab chiqarilgan miqdor");
+      const quality = body.qualityControl || order.qualityControl || {};
+      const acceptedQuantity = parseQuantity(body.acceptedQuantity ?? quality.acceptedQuantity ?? Math.max(producedQuantity - toNumber(body.defectQuantity ?? quality.defectQuantity) - toNumber(body.wasteQuantity ?? quality.wasteQuantity), 0), "Qabul qilingan miqdor");
+      const defectQuantity = parseQuantity(body.defectQuantity ?? quality.defectQuantity ?? 0, "Brak miqdori");
+      const wasteQuantity = parseQuantity(body.wasteQuantity ?? quality.wasteQuantity ?? 0, "Chiqindi miqdori");
       const packaging = this.normalizePackagingRows(body.packaging ?? order.packaging, order.unit);
       const packagedTotal = roundQuantity(packaging.reduce((sum, row) => sum + row.quantity * row.packSize, 0));
-      if (packagedTotal > actualQuantity) throw new BadRequestException({ code: "PACKAGING_EXCEEDS_OUTPUT", message: "Qadoqlangan jami mahsulot ishlab chiqarilgan miqdordan oshmasin." });
+      if (packagedTotal > acceptedQuantity) throw new BadRequestException({ code: "PACKAGING_EXCEEDS_OUTPUT", message: "Qadoqlangan jami miqdor mavjud mahsulotdan oshmoqda." });
 
-      const snapshot = Array.isArray(order.materialSnapshot)
-        ? order.materialSnapshot as any[]
-        : (order.bom?.materials || []).map((material: any) => ({
-          productId: material.productId,
-          productName: material.productName,
-          plannedQuantity: roundQuantity(toNumber(material.quantity) * toNumber(order.plannedQuantity) / Math.max(toNumber(order.bom?.outputQuantity), 1)),
-          unit: normalizeUnit(material.unit),
-          cost: toNumber(material.cost),
-        }));
+      const startedSnapshot = Array.isArray(order.materialSnapshot) ? order.materialSnapshot as any[] : [];
       const actualInput = Array.isArray(body.actualMaterials) ? body.actualMaterials : [];
       const actualByProduct = new Map<string, any>(actualInput.filter((item: any) => item.productId).map((item: any) => [item.productId, item] as [string, any]));
       const packagingMaterialIds = packaging.flatMap((row: any) => row.materials.map((material: any) => material.productId));
-      const productIds = [...new Set([...snapshot.map((item) => item.productId), ...actualInput.map((item: any) => item.productId), ...packagingMaterialIds].filter(Boolean))] as string[];
+      const productIds = [...new Set([...startedSnapshot.map((item) => item.productId), ...actualInput.map((item: any) => item.productId), ...packagingMaterialIds].filter(Boolean))] as string[];
       const products = await tx.product.findMany({ where: { companyId: tenantId, id: { in: productIds }, deletedAt: null }, select: { id: true, name: true, unit: true, cost: true } });
       const productsById = new Map(products.map((product) => [product.id, product]));
+
       const materialEntries: any[] = [];
-      let actualMaterialCost = 0;
-      for (const planned of snapshot) {
+      let rawMaterialCost = 0;
+      for (const planned of startedSnapshot) {
         if (!planned.productId) continue;
         const product = productsById.get(planned.productId);
-        const plannedQuantity = parseQuantity(planned.plannedQuantity ?? 0, "Reja xomashyo miqdori");
+        if (!product) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: `Retseptdagi "${planned.productName || planned.productId}" mahsuloti topilmadi. Retseptni yangilang.` });
+        const plannedQuantity = parseQuantity(planned.plannedQuantity ?? planned.requiredQuantity ?? 0, "Reja xomashyo miqdori");
         const entered = actualByProduct.get(planned.productId);
         const actualMaterialQuantity = parseQuantity(entered?.actualQuantity ?? entered?.quantity ?? plannedQuantity, "Haqiqiy xomashyo miqdori");
         const delta = roundQuantity(actualMaterialQuantity - plannedQuantity);
-        if (delta !== 0) {
-          await this.adjustStockDelta(tx, tenantId, warehouseId, planned.productId, -delta, {
-            type: delta > 0 ? "CONSUME" : "IN",
-            reason: delta > 0 ? "PRODUCTION_ADJUSTMENT" : "PRODUCTION_UNUSED_RETURN",
+        let actualCost = toNumber(planned.actualCost);
+        const plannedUnitCost = plannedQuantity > 0 ? actualCost / plannedQuantity : toNumber(planned.cost ?? product.cost);
+        let deltaAllocations: any[] = [];
+        if (delta > 0) {
+          deltaAllocations = await this.adjustStockDelta(tx, tenantId, materialWarehouseId, planned.productId, -delta, {
+            type: "CONSUME",
+            reason: "PRODUCTION_ACTUAL_EXTRA",
             sourceType: "PRODUCTION",
             sourceId: order.id,
-            idempotencyKey: `production-material:${order.id}:${planned.productId}`,
+            idempotencyKey: `production-material-extra:${order.id}:${planned.productId}`,
           });
+          actualCost += this.sumAllocationCost(deltaAllocations);
+        } else if (delta < 0) {
+          const returned = Math.abs(delta);
+          await this.adjustStockDelta(tx, tenantId, materialWarehouseId, planned.productId, returned, {
+            type: "IN",
+            reason: "PRODUCTION_UNUSED_RETURN",
+            sourceType: "PRODUCTION_RETURN",
+            sourceId: order.id,
+            idempotencyKey: `production-material-return:${order.id}:${planned.productId}`,
+            cost: plannedUnitCost,
+            batchNumber: `RETURN-${order.number}-${planned.productId.slice(-4)}`,
+          });
+          actualCost = Math.max(actualCost - returned * plannedUnitCost, 0);
         }
-        const cost = toNumber(planned.cost ?? product?.cost);
-        actualMaterialCost += actualMaterialQuantity * cost;
+        rawMaterialCost += actualCost;
         materialEntries.push({
-          productId: planned.productId,
-          productName: planned.productName || product?.name,
+          ...planned,
+          productName: planned.productName || product.name,
           actualQuantity: actualMaterialQuantity,
           plannedQuantity,
           difference: roundQuantity(actualMaterialQuantity - plannedQuantity),
           differencePercent: plannedQuantity > 0 ? roundMoney(((actualMaterialQuantity - plannedQuantity) / plannedQuantity) * 100, 4) : 0,
-          unit: planned.unit || product?.unit || "dona",
-          cost,
+          unit: product.unit,
+          cost: actualMaterialQuantity > 0 ? roundMoney(actualCost / actualMaterialQuantity, 6) : plannedUnitCost,
+          actualCost: roundMoney(actualCost, 6),
+          deltaAllocations,
         });
       }
       for (const entered of actualInput) {
-        if (!entered.productId || snapshot.some((item) => item.productId === entered.productId)) continue;
+        if (!entered.productId || startedSnapshot.some((item) => item.productId === entered.productId)) continue;
         const product = productsById.get(entered.productId);
-        const actualMaterialQuantity = parseQuantity(entered.actualQuantity ?? entered.quantity, "Haqiqiy xomashyo miqdori");
-        if (actualMaterialQuantity > 0) {
-          await this.adjustStockDelta(tx, tenantId, warehouseId, entered.productId, -actualMaterialQuantity, {
-            type: "CONSUME", reason: "PRODUCTION_ADDITIONAL_CONSUMPTION", sourceType: "PRODUCTION", sourceId: order.id,
+        if (!product) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: `Qo'shimcha xomashyo (${entered.productId}) topilmadi.` });
+        const actualMaterialQuantity = this.convertToProductUnit(entered.actualQuantity ?? entered.quantity, entered.unit || product.unit, product.unit, "Qo'shimcha xomashyo miqdori");
+        const allocations = actualMaterialQuantity > 0
+          ? await this.adjustStockDelta(tx, tenantId, materialWarehouseId, entered.productId, -actualMaterialQuantity, {
+            type: "CONSUME",
+            reason: "PRODUCTION_ADDITIONAL_CONSUMPTION",
+            sourceType: "PRODUCTION",
+            sourceId: order.id,
             idempotencyKey: `production-additional-material:${order.id}:${entered.productId}`,
-          });
+          })
+          : [];
+        const actualCost = this.sumAllocationCost(allocations);
+        rawMaterialCost += actualCost;
+        materialEntries.push({ productId: entered.productId, productName: product.name, actualQuantity: actualMaterialQuantity, plannedQuantity: 0, difference: actualMaterialQuantity, differencePercent: 0, unit: product.unit, cost: actualMaterialQuantity > 0 ? roundMoney(actualCost / actualMaterialQuantity, 6) : toNumber(product.cost), actualCost, allocations, additional: true });
+      }
+
+      const packageMaterialCosts = new Map<string, number>();
+      let packagingMaterialCost = 0;
+      for (const [index, row] of packaging.entries()) {
+        let rowCost = 0;
+        for (const material of row.materials) {
+          const product = productsById.get(material.productId);
+          if (!product) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: `Qadoqlash materiali (${material.productId}) topilmadi.` });
+          const totalMaterialQuantity = this.convertToProductUnit(roundQuantity(material.quantity * row.quantity), material.unit || product.unit, product.unit, "Qadoqlash materiali");
+          if (totalMaterialQuantity > 0) {
+            const allocations = await this.adjustStockDelta(tx, tenantId, materialWarehouseId, material.productId, -totalMaterialQuantity, {
+              type: "CONSUME",
+              reason: "PACKAGING_MATERIAL",
+              sourceType: "PRODUCTION_PACKAGING",
+              sourceId: order.id,
+              idempotencyKey: `production-packaging-material:${order.id}:${index}:${material.productId}`,
+            });
+            rowCost += this.sumAllocationCost(allocations);
+          }
         }
-        const cost = toNumber(product?.cost);
-        actualMaterialCost += actualMaterialQuantity * cost;
-        materialEntries.push({ productId: entered.productId, productName: product?.name, actualQuantity: actualMaterialQuantity, plannedQuantity: 0, unit: product?.unit || entered.unit || "dona", cost });
+        packageMaterialCosts.set(row.id, rowCost);
+        packagingMaterialCost += rowCost;
       }
-      const quality = body.qualityControl || order.qualityControl || {};
-      const acceptedQuantity = parseQuantity(body.acceptedQuantity ?? quality.acceptedQuantity ?? actualQuantity, "Qabul qilingan miqdor");
-      const defectQuantity = parseQuantity(body.defectQuantity ?? quality.defectQuantity ?? 0, "Brak miqdori");
-      const wasteQuantity = parseQuantity(body.wasteQuantity ?? quality.wasteQuantity ?? 0, "Chiqindi miqdori");
-      if (actualQuantity + defectQuantity + wasteQuantity > toNumber(order.plannedQuantity)) {
-        throw new BadRequestException({ code: "PRODUCTION_QUANTITY_EXCEEDS_PLAN", message: "Ishlab chiqarilgan, brak va chiqindi jami reja miqdoridan oshmasin." });
-      }
-      const packagingMaterialCost = packaging.reduce((total: number, row: any) => total + row.materials.reduce((rowTotal: number, material: any) => rowTotal + material.quantity * row.quantity * toNumber(productsById.get(material.productId)?.cost), 0), 0);
-      const totalMaterialCost = roundMoney(actualMaterialCost + packagingMaterialCost, 6);
+
       const overhead = this.normalizeOverheadItems(Array.isArray(body.overheadItems) ? body.overheadItems : order.overheadItems);
       const overheadCost = overhead.items.length ? overhead.total : roundMoney(body.overheadCost ?? order.overheadCost);
-      const actualProductionCost = roundMoney(totalMaterialCost + overheadCost, 6);
-      const bulkQuantity = roundQuantity(actualQuantity - packagedTotal);
+      const baseProductionCost = roundMoney(rawMaterialCost + overheadCost, 6);
+      const actualProductionCost = roundMoney(baseProductionCost + packagingMaterialCost, 6);
+      const baseUnitCost = acceptedQuantity > 0 ? baseProductionCost / acceptedQuantity : 0;
+      const actualUnitCost = acceptedQuantity > 0 ? roundMoney(actualProductionCost / acceptedQuantity, 6) : 0;
+      const bulkQuantity = roundQuantity(acceptedQuantity - packagedTotal);
+      const lotNumber = body.batchNumber || `MFG-${order.number}-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}`;
       if (bulkQuantity > 0) {
-        await this.adjustStockDelta(tx, tenantId, warehouseId, order.outputProductId, bulkQuantity, {
-          type: "PRODUCE", reason: packagedTotal > 0 ? "PRODUCTION_BULK_REMAINING" : "PRODUCTION_COMPLETE", sourceType: "PRODUCTION", sourceId: order.id,
+        await this.adjustStockDelta(tx, tenantId, outputWarehouseId, order.outputProductId, bulkQuantity, {
+          type: "PRODUCE",
+          reason: packagedTotal > 0 ? "PRODUCTION_BULK_REMAINING" : "PRODUCTION_COMPLETE",
+          sourceType: "PRODUCTION",
+          sourceId: order.id,
           idempotencyKey: `production-output:${order.id}`,
-          cost: actualQuantity > 0 ? actualProductionCost / actualQuantity : 0,
+          cost: baseUnitCost,
+          batchNumber: lotNumber,
           expiryDate: body.expiryDate,
+          productionDate: new Date(),
         });
       }
-      const bulkUnitCost = actualQuantity > 0 ? actualProductionCost / actualQuantity : 0;
+      const packagedRows: any[] = [];
       for (const [index, row] of packaging.entries()) {
-        const variant = await this.ensurePackagedVariant(tx, tenantId, order.outputProductId, order.outputProductName || "Tayyor mahsulot", "dona", row);
-        await this.adjustStockDelta(tx, tenantId, warehouseId, variant.id, row.quantity, {
-          type: "PRODUCE", reason: "PRODUCTION_PACKAGING", sourceType: "PRODUCTION_PACKAGING", sourceId: order.id,
-          idempotencyKey: `production-package:${order.id}:${index}`, cost: bulkUnitCost * row.packSize,
+        const variant = await this.ensurePackagedVariant(tx, tenantId, order.outputProductId, order.outputProductName || "Tayyor mahsulot", order.unit, row);
+        const rowPackagingCost = packageMaterialCosts.get(row.id) || 0;
+        const perPackPackagingCost = row.quantity > 0 ? rowPackagingCost / row.quantity : 0;
+        const packUnitCost = roundMoney(baseUnitCost * row.packSize + perPackPackagingCost, 6);
+        await this.adjustStockDelta(tx, tenantId, outputWarehouseId, variant.id, row.quantity, {
+          type: "PRODUCE",
+          reason: "PRODUCTION_PACKAGING",
+          sourceType: "PRODUCTION_PACKAGING",
+          sourceId: order.id,
+          idempotencyKey: `production-package:${order.id}:${index}`,
+          cost: packUnitCost,
+          batchNumber: `${lotNumber}-PKG-${index + 1}`,
           expiryDate: body.expiryDate,
+          productionDate: new Date(),
         });
-        for (const material of row.materials) {
-          const totalMaterialQuantity = roundQuantity(material.quantity * row.quantity);
-          if (totalMaterialQuantity > 0) await this.adjustStockDelta(tx, tenantId, warehouseId, material.productId, -totalMaterialQuantity, {
-            type: "CONSUME", reason: "PACKAGING_MATERIAL", sourceType: "PRODUCTION_PACKAGING", sourceId: order.id,
-            idempotencyKey: `production-packaging-material:${order.id}:${index}:${material.productId}`,
-          });
-        }
+        packagedRows.push({ ...row, productId: variant.id, productName: variant.name, unit: "dona", packagingMaterialCost: roundMoney(rowPackagingCost, 6), unitCost: packUnitCost });
       }
+
       const yieldPercent = toNumber(order.plannedQuantity) > 0 ? roundMoney((acceptedQuantity / toNumber(order.plannedQuantity)) * 100, 4) : 0;
-      const wastePercent = actualQuantity + wasteQuantity > 0 ? roundMoney((wasteQuantity / (actualQuantity + wasteQuantity)) * 100, 4) : 0;
+      const wastePercent = producedQuantity > 0 ? roundMoney((wasteQuantity / producedQuantity) * 100, 4) : 0;
+      const normalWastePercent = this.getSnapshotNormalWastePercent(order);
+      const qualityControl = {
+        status: body.qualityStatus || quality.status || quality.result || "PASS",
+        producedQuantity,
+        acceptedQuantity,
+        defectQuantity,
+        wasteQuantity,
+        note: body.qualityNote || quality.note || "",
+        checkedAt: quality.checkedAt || new Date().toISOString(),
+        inspector: quality.inspector || body.inspector || null,
+        yieldPercent,
+        wastePercent,
+        normalWastePercent,
+        abnormalWastePercent: normalWastePercent === null ? 0 : roundMoney(Math.max(wastePercent - normalWastePercent, 0), 4),
+      };
       const updated = await tx.productionOrder.update({
         where: { id, companyId: tenantId },
         data: {
           status: "COMPLETED",
-          actualQuantity,
+          actualQuantity: producedQuantity,
           acceptedQuantity,
           defectQuantity,
           wasteQuantity,
           yieldPercent,
           wastePercent,
-          packaging,
+          packaging: packagedRows,
           remainingBulkQuantity: bulkQuantity,
           actualMaterials: materialEntries,
-          actualMaterialCost: totalMaterialCost,
+          actualMaterialCost: roundMoney(rawMaterialCost + packagingMaterialCost, 6),
           actualProductionCost,
-          actualUnitCost: actualQuantity > 0 ? roundMoney(actualProductionCost / actualQuantity, 6) : 0,
+          actualUnitCost,
           overheadItems: overhead.items,
           overheadCost,
+          materialCost: roundMoney(rawMaterialCost),
           productionCost: roundMoney(actualProductionCost),
-          unitCost: actualQuantity > 0 ? roundMoney(actualProductionCost / actualQuantity) : 0,
-          qualityControl: body.qualityControl || undefined,
-          qualityStatus: body.qualityStatus || quality.status || quality.result || undefined,
-          qualityNote: body.qualityNote || quality.note || undefined,
+          unitCost: roundMoney(actualUnitCost),
+          qualityControl,
+          qualityStatus: qualityControl.status,
+          qualityNote: qualityControl.note,
           completionNote: body.completionNote || body.note || undefined,
-          warehouseId,
+          materialWarehouseId,
+          outputWarehouseId,
+          warehouseId: materialWarehouseId,
+          costingPolicy: "BATCH_ACTUAL",
           completedAt: new Date(),
         },
-        include: { bom: { include: { materials: true } }, stages: true },
+        include: { bom: { include: { materials: true, outputProduct: true } }, stages: true },
       });
-      await this.writeAudit(tx, tenantId, actorUserId, "production.complete", "production_order", order.id, { producedQuantity: actualQuantity, packaging, yieldPercent, wastePercent, actualMaterialCost: totalMaterialCost, packagingMaterialCost, actualProductionCost });
+      await this.writeAudit(tx, tenantId, actorUserId, "production.complete", "production_order", order.id, { producedQuantity, acceptedQuantity, packaging: packagedRows, yieldPercent, wastePercent, rawMaterialCost, packagingMaterialCost, overheadCost, actualProductionCost, outputWarehouseId });
       return this.productionOrderDto(updated);
     });
   }
@@ -2066,27 +2383,279 @@ async createCategory(companyId: string, body: any) {
   async cancelProduction(companyId: string, id: string, body: any = {}, actorUserId?: string) {
     const tenantId = this.requireCompany(companyId);
     return this.prisma.$transaction(async (tx) => {
-      const order = await tx.productionOrder.findFirst({ where: { id, companyId: tenantId }, include: { bom: { include: { materials: true } }, stages: true } });
+      const order = await tx.productionOrder.findFirst({ where: { id, companyId: tenantId }, include: { bom: { include: { materials: true, outputProduct: true } }, stages: true } });
       if (!order) throw new NotFoundException({ code: "PRODUCTION_NOT_FOUND", message: "Ishlab chiqarish topilmadi." });
       if (order.status === "COMPLETED") throw new ConflictException({ code: "PRODUCTION_COMPLETED", message: "Yakunlangan ishlab chiqarish bekor qilinmaydi." });
       if (order.status === "CANCELLED") return this.productionOrderDto(order);
-      if (order.status === "IN_PROGRESS" && order.warehouseId && Array.isArray(order.materialSnapshot)) {
+      const warehouseId = order.materialWarehouseId || order.warehouseId;
+      if (warehouseId && Array.isArray(order.materialSnapshot)) {
         for (const material of order.materialSnapshot as any[]) {
-          if (!material.productId || toNumber(material.plannedQuantity) <= 0) continue;
-          await this.adjustStockDelta(tx, tenantId, order.warehouseId, material.productId, toNumber(material.plannedQuantity), {
-            type: "IN", reason: "PRODUCTION_CANCEL_ROLLBACK", sourceType: "PRODUCTION_CANCEL", sourceId: order.id, note: body.reason,
-            idempotencyKey: `production-cancel:${order.id}:${material.productId}`,
-          });
+          if (!material.productId) continue;
+          const reservedQuantity = toNumber(material.reservedQuantity);
+          if (order.status === "PLANNED" && reservedQuantity > 0) {
+            await this.releaseReservationInTx(tx, tenantId, { warehouseId, productId: material.productId, quantity: reservedQuantity, unit: material.unit, sourceType: "PRODUCTION", sourceId: order.id }, actorUserId);
+          }
+          const consumedQuantity = toNumber(material.consumedQuantity || material.actualQuantity);
+          if (order.status === "IN_PROGRESS" && consumedQuantity > 0) {
+            await this.adjustStockDelta(tx, tenantId, warehouseId, material.productId, consumedQuantity, {
+              type: "IN",
+              reason: "PRODUCTION_CANCEL_RETURN",
+              sourceType: "PRODUCTION_CANCEL",
+              sourceId: order.id,
+              note: body.reason,
+              idempotencyKey: `production-cancel:${order.id}:${material.productId}`,
+              cost: material.cost,
+              batchNumber: `CANCEL-${order.number}-${material.productId.slice(-4)}`,
+            });
+          }
         }
       }
       const updated = await tx.productionOrder.update({
         where: { id, companyId: tenantId },
         data: { status: "CANCELLED", cancelledAt: new Date(), note: [order.note, body.reason].filter(Boolean).join(" | ") || undefined },
-        include: { bom: { include: { materials: true } }, stages: true },
+        include: { bom: { include: { materials: true, outputProduct: true } }, stages: true },
       });
       await this.writeAudit(tx, tenantId, actorUserId, "production.cancel", "production_order", order.id, { reason: body.reason || null });
       return this.productionOrderDto(updated);
     });
+  }
+
+  private async getRecipeSnapshot(tx: Tx, companyId: string, bomId: string | undefined) {
+    if (!bomId) throw new BadRequestException({ code: "RECIPE_REQUIRED", message: "Retsept tanlang." });
+    const bom = await tx.bom.findFirst({
+      where: { id: bomId, companyId },
+      include: { materials: true, outputProduct: true },
+    });
+    if (!bom) throw new NotFoundException({ code: "RECIPE_NOT_FOUND", message: "Retsept topilmadi." });
+    if (bom.status !== "ACTIVE") throw new ConflictException({ code: "RECIPE_INACTIVE", message: "Retsept faol emas." });
+    if (!bom.outputProduct) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: "Retseptdagi tayyor mahsulot topilmadi. Retseptni yangilang." });
+    const outputQuantity = parseQuantity(bom.outputQuantity, "Retsept chiqish miqdori");
+    if (outputQuantity <= 0) throw new BadRequestException({ code: "INVALID_OUTPUT_QUANTITY", message: "Retsept chiqish miqdori 0 dan katta bo'lishi kerak." });
+    const productIds = bom.materials.map((material) => material.productId).filter(Boolean) as string[];
+    const products = await tx.product.findMany({
+      where: { companyId, id: { in: productIds }, deletedAt: null },
+      select: { id: true, name: true, sku: true, unit: true, cost: true },
+    });
+    const productMap = new Map(products.map((product) => [product.id, product]));
+    const materials = bom.materials.map((material: any) => {
+      const product = material.productId ? productMap.get(material.productId) : null;
+      if (!product) {
+        throw new NotFoundException({
+          code: "PRODUCTION_MATERIAL_NOT_FOUND",
+          message: `Retseptdagi "${material.productName || material.productId}" mahsuloti topilmadi. Retseptni yangilang.`,
+        });
+      }
+      const recipeUnit = normalizeUnit(material.unit || product.unit);
+      const canonicalQuantity = roundQuantity(convertQuantity(material.quantity, recipeUnit, product.unit));
+      return {
+        recipeMaterialId: material.id,
+        productId: product.id,
+        productName: product.name,
+        sku: product.sku,
+        quantity: decimalToNumber(material.quantity),
+        unit: recipeUnit,
+        canonicalQuantity,
+        canonicalUnit: product.unit,
+        cost: decimalToNumber(material.cost),
+        currentUnitCost: decimalToNumber(product.cost),
+      };
+    });
+    return {
+      id: bom.id,
+      version: bom.version,
+      versionGroupId: bom.versionGroupId || bom.id,
+      name: bom.name,
+      outputProductId: bom.outputProduct.id,
+      outputProductName: bom.outputProduct.name,
+      outputQuantity,
+      outputUnit: bom.outputProduct.unit,
+      unit: bom.outputProduct.unit,
+      overheadCost: decimalToNumber(bom.overheadCost),
+      normalWastePercent: bom.normalWastePercent === null || bom.normalWastePercent === undefined ? null : decimalToNumber(bom.normalWastePercent),
+      materials,
+    };
+  }
+
+  private async ensureOrderRecipeSnapshot(tx: Tx, companyId: string, order: any) {
+    if (order.recipeSnapshot && typeof order.recipeSnapshot === "object") return order.recipeSnapshot as any;
+    const snapshot = await this.getRecipeSnapshot(tx, companyId, order.bomId);
+    await tx.productionOrder.update({ where: { id: order.id, companyId }, data: { recipeSnapshot: snapshot, recipeVersion: snapshot.version } });
+    return snapshot;
+  }
+
+  private async resolveProductionRequirements(tx: Tx, companyId: string, recipeSnapshot: any, plannedQuantity: number) {
+    const outputQuantity = parseQuantity(recipeSnapshot?.outputQuantity, "Retsept chiqish miqdori");
+    if (outputQuantity <= 0) throw new BadRequestException({ code: "INVALID_OUTPUT_QUANTITY", message: "Retsept chiqish miqdori 0 dan katta bo'lishi kerak." });
+    const targetQuantity = parseQuantity(plannedQuantity, "Reja miqdori");
+    if (targetQuantity <= 0) throw new BadRequestException({ code: "INVALID_PLANNED_QUANTITY", message: "Reja miqdori 0 dan katta bo'lishi kerak." });
+    const factor = targetQuantity / outputQuantity;
+    const materials = Array.isArray(recipeSnapshot?.materials) ? recipeSnapshot.materials : [];
+    const products = await tx.product.findMany({
+      where: { companyId, id: { in: materials.map((material: any) => material.productId).filter(Boolean) }, deletedAt: null },
+      select: { id: true, name: true, sku: true, unit: true, cost: true },
+    });
+    const productMap = new Map(products.map((product) => [product.id, product]));
+    return materials.map((material: any, index: number) => {
+      const product = material.productId ? productMap.get(material.productId) : null;
+      if (!product) {
+        throw new NotFoundException({
+          code: "PRODUCTION_MATERIAL_NOT_FOUND",
+          message: `Retseptdagi "${material.productName || material.productId || `xomashyo ${index + 1}`}" mahsuloti topilmadi. Retseptni yangilang.`,
+        });
+      }
+      const recipeUnit = normalizeUnit(material.unit || material.recipeUnit || product.unit);
+      const canonicalPerRecipe = material.canonicalQuantity === undefined
+        ? convertQuantity(material.quantity, recipeUnit, product.unit)
+        : toNumber(material.canonicalQuantity);
+      const requiredQuantity = roundQuantity(canonicalPerRecipe * factor);
+      const unitCost = toNumber(product.cost ?? material.currentUnitCost ?? material.cost);
+      return {
+        id: material.recipeMaterialId || material.id || material.productId,
+        recipeMaterialId: material.recipeMaterialId || material.id || null,
+        productId: product.id,
+        productName: product.name,
+        sku: product.sku,
+        recipeQuantity: toNumber(material.quantity),
+        recipeUnit,
+        bomQuantity: toNumber(material.quantity),
+        requiredQuantity,
+        plannedQuantity: requiredQuantity,
+        unit: product.unit,
+        cost: unitCost,
+        totalCost: roundMoney(requiredQuantity * unitCost, 6),
+        productionFactor: factor,
+      };
+    });
+  }
+
+  private async normalizeSnapshotRequirements(tx: Tx, companyId: string, materials: any[], recipeSnapshot: any, plannedQuantity: number) {
+    if (!materials.length) return this.resolveProductionRequirements(tx, companyId, recipeSnapshot, plannedQuantity);
+    const productIds = materials.map((material) => material.productId).filter(Boolean);
+    const products = await tx.product.findMany({ where: { companyId, id: { in: productIds }, deletedAt: null }, select: { id: true, name: true, sku: true, unit: true, cost: true } });
+    const productMap = new Map(products.map((product) => [product.id, product]));
+    return materials.map((material, index) => {
+      const product = productMap.get(material.productId);
+      if (!product) {
+        throw new NotFoundException({
+          code: "PRODUCTION_MATERIAL_NOT_FOUND",
+          message: `Retseptdagi "${material.productName || material.productId || `xomashyo ${index + 1}`}" mahsuloti topilmadi. Retseptni yangilang.`,
+        });
+      }
+      const requiredQuantity = this.convertToProductUnit(material.requiredQuantity ?? material.plannedQuantity ?? material.quantity, material.unit || product.unit, product.unit, "Reja xomashyo miqdori");
+      return {
+        ...material,
+        id: material.id || material.recipeMaterialId || product.id,
+        productId: product.id,
+        productName: material.productName || product.name,
+        sku: material.sku || product.sku,
+        requiredQuantity,
+        plannedQuantity: requiredQuantity,
+        unit: product.unit,
+        cost: toNumber(material.cost ?? product.cost),
+        reservedQuantity: toNumber(material.reservedQuantity),
+      };
+    });
+  }
+
+  private async getMaterialAvailabilityInTx(tx: Tx, companyId: string, warehouseId: string, requiredMaterials: any[]) {
+    const productIds = [...new Set(requiredMaterials.map((material) => material.productId).filter(Boolean))] as string[];
+    const stockItems = productIds.length
+      ? await tx.stockItem.findMany({ where: { companyId, warehouseId, productId: { in: productIds } }, include: { product: true } })
+      : [];
+    const stockMap = new Map(stockItems.map((item) => [item.productId, item]));
+    return requiredMaterials.map((material) => {
+      const stock = stockMap.get(material.productId);
+      const quantity = decimalToNumber(stock?.quantity);
+      const reserved = decimalToNumber(stock?.reserved);
+      const available = roundQuantity(Math.max(quantity - reserved, 0));
+      const required = roundQuantity(material.requiredQuantity ?? material.plannedQuantity ?? 0);
+      const shortage = roundQuantity(Math.max(required - available, 0));
+      return {
+        ...material,
+        requiredQuantity: required,
+        plannedQuantity: required,
+        quantity,
+        warehouseQuantity: quantity,
+        reserved,
+        reservedQuantity: toNumber(material.reservedQuantity),
+        available,
+        availableQuantity: available,
+        shortage,
+        missingQuantity: shortage,
+        enough: shortage <= 0,
+        totalCost: roundMoney(required * toNumber(material.cost), 6),
+      };
+    });
+  }
+
+  private async reserveStockInTx(tx: Tx, companyId: string, input: any, actorUserId?: string) {
+    const product = await this.requireProduct(tx, companyId, input.productId);
+    await this.requireWarehouse(tx, companyId, input.warehouseId);
+    const quantity = this.convertToProductUnit(input.quantity, input.unit || input.inputUnit || product.unit, product.unit, "Rezerv miqdori");
+    if (quantity <= 0) throw new BadRequestException({ code: "INVALID_QUANTITY", message: "Rezerv miqdori 0 dan katta bo'lsin." });
+    const item = await this.ensureStockItem(tx, companyId, input.warehouseId, input.productId);
+    const available = roundQuantity(toNumber(item.quantity) - toNumber(item.reserved));
+    if (quantity > available) {
+      throw new ConflictException({ code: "INSUFFICIENT_AVAILABLE_STOCK", message: `${product.name} yetarli emas. Kerak: ${quantity} ${product.unit}. Mavjud: ${Math.max(available, 0)} ${product.unit}.` });
+    }
+    const updated = await tx.stockItem.updateMany({
+      where: { id: item.id, quantity: { gte: roundQuantity(toNumber(item.reserved) + quantity) } },
+      data: { reserved: { increment: quantity } },
+    });
+    if (updated.count !== 1) throw new ConflictException({ code: "STOCK_RESERVATION_CONFLICT", message: "Qoldiq parallel operatsiya sabab o'zgardi. Qayta urinib ko'ring." });
+    await this.writeAudit(tx, companyId, actorUserId, "stock.reserve", "product", input.productId, { warehouseId: input.warehouseId, quantity, unit: product.unit, sourceType: input.sourceType || null, sourceId: input.sourceId || null });
+    return quantity;
+  }
+
+  private async releaseReservationInTx(tx: Tx, companyId: string, input: any, actorUserId?: string) {
+    const product = await this.requireProduct(tx, companyId, input.productId);
+    const quantity = this.convertToProductUnit(input.quantity, input.unit || input.inputUnit || product.unit, product.unit, "Rezervdan chiqarish miqdori");
+    if (quantity <= 0) return 0;
+    const item = await this.ensureStockItem(tx, companyId, input.warehouseId, input.productId);
+    const updated = await tx.stockItem.updateMany({
+      where: { id: item.id, reserved: { gte: quantity } },
+      data: { reserved: { decrement: quantity } },
+    });
+    if (updated.count !== 1) throw new ConflictException({ code: "RESERVATION_RELEASE_CONFLICT", message: "Rezerv qoldig'i yetarli emas." });
+    await this.writeAudit(tx, companyId, actorUserId, "stock.release_reservation", "product", input.productId, { warehouseId: input.warehouseId, quantity, unit: product.unit, sourceType: input.sourceType || null, sourceId: input.sourceId || null });
+    return quantity;
+  }
+
+  private async consumeReservedStockInTx(tx: Tx, companyId: string, input: any, actorUserId?: string) {
+    const product = await this.requireProduct(tx, companyId, input.productId);
+    const quantity = this.convertToProductUnit(input.quantity, input.unit || input.inputUnit || product.unit, product.unit, "Rezerv sarfi");
+    if (quantity <= 0) return [];
+    const item = await this.ensureStockItem(tx, companyId, input.warehouseId, input.productId);
+    const reserved = toNumber(item.reserved);
+    if (quantity > reserved) throw new ConflictException({ code: "RESERVED_STOCK_INSUFFICIENT", message: `${product.name} rezervi yetarli emas. Rezerv: ${reserved} ${product.unit}.` });
+    const updated = await tx.stockItem.updateMany({
+      where: { id: item.id, reserved: { gte: quantity } },
+      data: { reserved: { decrement: quantity } },
+    });
+    if (updated.count !== 1) throw new ConflictException({ code: "RESERVED_STOCK_INSUFFICIENT", message: `${product.name} rezervi yetarli emas.` });
+    const allocations = await this.adjustStockDelta(tx, companyId, input.warehouseId, input.productId, -quantity, {
+      type: input.type || "CONSUME",
+      reason: input.reason || "RESERVED_CONSUMPTION",
+      sourceType: input.sourceType || "PRODUCTION",
+      sourceId: input.sourceId || "",
+      idempotencyKey: input.idempotencyKey,
+      note: input.note,
+      actorUserId,
+    });
+    await this.writeAudit(tx, companyId, actorUserId, "stock.consume_reserved", "product", input.productId, { warehouseId: input.warehouseId, quantity, unit: product.unit, sourceType: input.sourceType || null, sourceId: input.sourceId || null });
+    return allocations;
+  }
+
+  private sumAllocationCost(allocations: any[] = []) {
+    return roundMoney(allocations.reduce((sum, allocation) => sum + toNumber(allocation.quantity) * toNumber(allocation.unitCost), 0), 6);
+  }
+
+  private getSnapshotNormalWastePercent(order: any) {
+    if (order.recipeSnapshot && typeof order.recipeSnapshot === "object" && order.recipeSnapshot.normalWastePercent !== undefined && order.recipeSnapshot.normalWastePercent !== null) {
+      return toNumber(order.recipeSnapshot.normalWastePercent);
+    }
+    if (order.bom?.normalWastePercent !== null && order.bom?.normalWastePercent !== undefined) return decimalToNumber(order.bom.normalWastePercent);
+    return null;
   }
 
   async updateProductionStage(companyId: string, orderId: string, stageId: string, action: "start" | "complete", body: any = {}) {
@@ -2348,6 +2917,14 @@ async createCategory(companyId: string, body: any) {
     const scope = body.scope || "company";
     const settings = body.settings || body.value || body;
 
+    const requestedCurrency = settings?.formats?.currency || settings?.defaults?.currency || settings?.currency;
+    if (requestedCurrency) {
+      await this.prisma.company.update({
+        where: { id: tenantId },
+        data: { currency: normalizeCurrency(requestedCurrency) },
+      });
+    }
+
     if (body.key === "inventory_policy" || settings?.inventoryPolicy || settings?.warehouse?.inventoryPolicy) {
       const policy = String(settings?.inventoryPolicy || settings?.warehouse?.inventoryPolicy || body.value || "FEFO").toUpperCase();
       if (!["FIFO", "FEFO"].includes(policy)) throw new BadRequestException({ code: "INVENTORY_POLICY_INVALID", message: "Ombor sarfi siyosati FIFO yoki FEFO bo'lishi kerak." });
@@ -2371,13 +2948,15 @@ async createCategory(companyId: string, body: any) {
     return this.getSettings(tenantId, userId);
   }
 
-  private async changeStock(companyId: string, body: any) {
+  private async changeStock(companyId: string, body: any, actorUserId?: string) {
     const tenantId = this.requireCompany(companyId);
-    const rawAmount = Number(body.quantity);
-    if (!Number.isFinite(rawAmount) || rawAmount === 0) throw new BadRequestException({ code: "INVALID_QUANTITY", message: "Miqdor 0 dan katta bo'lsin." });
-    const amount = rawAmount > 0 ? parseQuantity(rawAmount) : -parseQuantity(Math.abs(rawAmount));
+    const rawAmount = parseQuantity(body.quantity, "Miqdor");
+    if (!rawAmount || rawAmount <= 0) throw new BadRequestException({ code: "INVALID_QUANTITY", message: "Miqdor 0 dan katta bo'lsin." });
 
     return this.prisma.$transaction(async (tx) => {
+      const product = await this.requireProduct(tx, tenantId, body.productId);
+      const canonicalAmount = this.convertToProductUnit(rawAmount, body.inputUnit || body.unit || product.unit, product.unit, "Miqdor");
+      const amount = body.type === "OUT" ? -canonicalAmount : canonicalAmount;
       await this.adjustStockDelta(tx, tenantId, body.warehouseId, body.productId, amount, {
         type: amount > 0 ? "IN" : "OUT",
         reason: body.reason,
@@ -2386,12 +2965,16 @@ async createCategory(companyId: string, body: any) {
         idempotencyKey: body.idempotencyKey,
         note: body.note,
         cost: body.cost,
+        totalCost: body.totalCost,
+        inputUnit: body.inputUnit || body.unit || product.unit,
         batchNumber: body.batchNumber,
         expiryDate: body.expiryDate,
         productionDate: body.productionDate,
         receivedDate: body.receivedDate,
+        actorUserId,
       });
 
+      await this.writeAudit(tx, tenantId, actorUserId, amount > 0 ? "stock.in" : "stock.out", "product", body.productId, { warehouseId: body.warehouseId, quantity: Math.abs(amount), unit: product.unit, reason: body.reason || null, note: body.note || null });
       return this.listStock(tenantId, { warehouseId: body.warehouseId, productId: body.productId });
     });
   }
@@ -2403,24 +2986,19 @@ async createCategory(companyId: string, body: any) {
       const existingMovement = await tx.stockMovement.findUnique({ where: { companyId_idempotencyKey: { companyId, idempotencyKey: movement.idempotencyKey } } });
       if (existingMovement) return [];
     }
-    const product = await tx.product.findFirst({ where: { id: productId, companyId, deletedAt: null } });
-    if (!product) {
-      throw new NotFoundException({
-        code: "PRODUCT_NOT_FOUND",
-        message: `Mahsulot topilmadi (productId: ${productId}).`,
-      });
-    }
+    const product = await this.requireProduct(tx, companyId, productId);
     const item = await this.ensureStockItem(tx, companyId, warehouseId, productId);
     const current = toNumber(item.quantity);
     const reserved = toNumber(item.reserved);
+    const absoluteDelta = roundQuantity(Math.abs(delta));
     if (delta < 0 && Math.abs(delta) > Math.max(current - reserved, 0)) {
-      const required = roundQuantity(Math.abs(delta));
+      const required = absoluteDelta;
       const available = roundQuantity(Math.max(current - reserved, 0));
       const message = movement.sourceType === "PRODUCTION"
         ? `${product.name} yetarli emas. Kerak: ${required} ${product.unit}. Mavjud: ${available} ${product.unit}.`
         : movement.sourceType === "PRODUCTION_PACKAGING"
           ? `${product.name} qadoqlash materiali yetarli emas. Kerak: ${required} ${product.unit}. Mavjud: ${available} ${product.unit}.`
-          : `${product.name} qoldig'i yetarli emas. Kerak: ${required} ${product.unit}. Mavjud: ${available} ${product.unit}.`;
+          : `Mavjud qoldiq yetarli emas. Mavjud: ${available} ${product.unit}.`;
       throw new ConflictException({ code: "INSUFFICIENT_AVAILABLE_STOCK", message });
     }
     const next = roundQuantity(current + delta);
@@ -2428,28 +3006,62 @@ async createCategory(companyId: string, body: any) {
     if (delta < 0 && product.status !== "ACTIVE") {
       throw new ConflictException({ code: "PRODUCT_INACTIVE", message: "Faol bo'lmagan mahsulot sotilmaydi." });
     }
+    const canonicalUnitCost = this.resolveCanonicalUnitCost(product, movement, absoluteDelta);
 
     const allocations: any[] = [];
     if (delta > 0) {
-      const batch = await tx.batch.create({
-        data: {
-          companyId,
-          batchNumber: movement.batchNumber || `${movement.sourceType || "MANUAL"}-${movement.sourceId || Date.now()}-${randomUUID().slice(0, 8)}`,
-          productId,
-          warehouseId,
-          quantity: delta,
-          remainingQuantity: delta,
-          productionDate: movement.productionDate ? parseOptionalDate(movement.productionDate) : movement.sourceType === "PRODUCTION" ? new Date() : null,
-          receivedDate: movement.receivedDate ? parseOptionalDate(movement.receivedDate) : new Date(),
-          expiryDate: movement.expiryDate ? parseOptionalDate(movement.expiryDate) : product.expiryDate,
-          unitCost: movement.cost === undefined ? toNumber(product.cost) : toNumber(movement.cost),
-          sourceType: movement.sourceType || "MANUAL",
-          sourceId: movement.sourceId || null,
-        },
-      });
+      const batchNumber = movement.batchNumber || `${movement.sourceType || "MANUAL"}-${movement.sourceId || Date.now()}-${randomUUID().slice(0, 8)}`;
+      const existingBatch = movement.batchNumber
+        ? await tx.batch.findFirst({ where: { companyId, batchNumber, productId, warehouseId } })
+        : null;
+      const batch = existingBatch
+        ? await tx.batch.update({
+          where: { id: existingBatch.id },
+          data: {
+            status: "ACTIVE",
+            quantity: { increment: delta },
+            remainingQuantity: { increment: delta },
+            productionDate: movement.productionDate ? parseOptionalDate(movement.productionDate) : existingBatch.productionDate,
+            receivedDate: movement.receivedDate ? parseOptionalDate(movement.receivedDate) : existingBatch.receivedDate,
+            expiryDate: movement.expiryDate ? parseOptionalDate(movement.expiryDate) : existingBatch.expiryDate,
+            unitCost: canonicalUnitCost,
+          },
+        })
+        : await tx.batch.create({
+          data: {
+            companyId,
+            batchNumber,
+            productId,
+            warehouseId,
+            quantity: delta,
+            remainingQuantity: delta,
+            productionDate: movement.productionDate ? parseOptionalDate(movement.productionDate) : movement.sourceType === "PRODUCTION" ? new Date() : null,
+            receivedDate: movement.receivedDate ? parseOptionalDate(movement.receivedDate) : new Date(),
+            expiryDate: movement.expiryDate ? parseOptionalDate(movement.expiryDate) : product.expiryDate,
+            unitCost: canonicalUnitCost,
+            sourceType: movement.sourceType || "MANUAL",
+            sourceId: movement.sourceId || null,
+          },
+        });
       allocations.push({ batchId: batch.id, quantity: delta, unitCost: toNumber(batch.unitCost) });
       await tx.stockMovement.create({ data: this.stockMovementData(companyId, warehouseId, product, movement, delta, batch.id) });
+      await tx.stockItem.update({ where: { id: item.id }, data: { quantity: { increment: delta }, cost: canonicalUnitCost } });
     } else {
+      const guarded = await tx.stockItem.updateMany({
+        where: {
+          id: item.id,
+          companyId,
+          warehouseId,
+          productId,
+          quantity: { gte: roundQuantity(reserved + absoluteDelta) },
+        },
+        data: { quantity: { decrement: absoluteDelta } },
+      });
+      if (guarded.count !== 1) {
+        const fresh = await tx.stockItem.findUnique({ where: { id: item.id } });
+        const available = roundQuantity(Math.max(toNumber(fresh?.quantity) - toNumber(fresh?.reserved), 0));
+        throw new ConflictException({ code: "INSUFFICIENT_AVAILABLE_STOCK", message: `Mavjud qoldiq yetarli emas. Mavjud: ${available} ${product.unit}.` });
+      }
       await this.ensureLegacyBatchCoverage(tx, companyId, warehouseId, productId, current, product);
       const batches = await tx.batch.findMany({ where: { companyId, warehouseId, productId, status: "ACTIVE", remainingQuantity: { gt: 0 } } });
       const policy = await this.getInventoryPolicy(tx, companyId);
@@ -2466,7 +3078,13 @@ async createCategory(companyId: string, body: any) {
         const batch = batches[index];
         const take = Math.min(remaining, toNumber(batch.remainingQuantity));
         if (take <= 0) continue;
-        await tx.batch.update({ where: { id: batch.id }, data: { remainingQuantity: { decrement: take } } });
+        const batchUpdate = await tx.batch.updateMany({
+          where: { id: batch.id, companyId, remainingQuantity: { gte: take } },
+          data: { remainingQuantity: { decrement: take } },
+        });
+        if (batchUpdate.count !== 1) {
+          throw new ConflictException({ code: "BATCH_STATE_CONFLICT", message: "Batch qoldig'i parallel operatsiya sabab o'zgardi. Qayta urinib ko'ring." });
+        }
         const key = movement.idempotencyKey ? `${movement.idempotencyKey}:batch:${index}` : undefined;
         await tx.batchConsumption.create({ data: { companyId, batchId: batch.id, productId, warehouseId, quantity: take, unitCost: batch.unitCost, sourceType: movement.sourceType || "STOCK_OUT", sourceId: movement.sourceId || "", idempotencyKey: key } });
         await tx.stockMovement.create({ data: this.stockMovementData(companyId, warehouseId, product, movement, take, batch.id, index === 0 ? movement.idempotencyKey : key) });
@@ -2475,7 +3093,6 @@ async createCategory(companyId: string, body: any) {
       }
       if (remaining > 0) throw new ConflictException({ code: "BATCH_STOCK_MISMATCH", message: "Batch qoldig'i ombor qoldig'i bilan mos emas." });
     }
-    await tx.stockItem.update({ where: { id: item.id }, data: { quantity: next, cost: movement.cost === undefined ? undefined : toNumber(movement.cost) } });
     await this.refreshProductStock(tx, companyId, productId);
     return allocations;
   }
@@ -2489,7 +3106,7 @@ async createCategory(companyId: string, body: any) {
       type: movement.type,
       quantity: Math.abs(quantity),
       unit: product.unit,
-      cost: movement.cost === undefined ? product.cost : toNumber(movement.cost),
+      cost: this.resolveCanonicalUnitCost(product, movement, Math.abs(quantity)),
       reason: movement.reason,
       sourceType: movement.sourceType,
       sourceId: movement.sourceId,
@@ -2505,13 +3122,97 @@ async createCategory(companyId: string, body: any) {
     const aggregate = await tx.batch.aggregate({ where: { companyId, warehouseId, productId, status: "ACTIVE" }, _sum: { remainingQuantity: true } });
     const missing = roundQuantity(currentQuantity - toNumber(aggregate._sum.remainingQuantity));
     if (missing > 0) {
-      await tx.batch.create({ data: { companyId, batchNumber: `LEGACY-${productId}-${randomUUID().slice(0, 8)}`, productId, warehouseId, quantity: missing, remainingQuantity: missing, receivedDate: new Date(), expiryDate: product.expiryDate, unitCost: product.cost, sourceType: "LEGACY_STOCK", sourceId: productId } });
+      const existingLegacy = await tx.batch.findFirst({
+        where: { companyId, warehouseId, productId, sourceType: "LEGACY_STOCK", sourceId: `${warehouseId}:${productId}` },
+        orderBy: { createdAt: "asc" },
+      });
+      if (existingLegacy) {
+        await tx.batch.update({
+          where: { id: existingLegacy.id },
+          data: {
+            status: "ACTIVE",
+            quantity: { increment: missing },
+            remainingQuantity: { increment: missing },
+          },
+        });
+      } else {
+        await tx.batch.create({
+          data: {
+            companyId,
+            batchNumber: `LEGACY-${warehouseId.slice(-6)}-${productId.slice(-6)}`,
+            productId,
+            warehouseId,
+            quantity: missing,
+            remainingQuantity: missing,
+            receivedDate: new Date(),
+            expiryDate: product.expiryDate,
+            unitCost: product.cost,
+            sourceType: "LEGACY_STOCK",
+            sourceId: `${warehouseId}:${productId}`,
+          },
+        });
+      }
     }
   }
 
   private async getInventoryPolicy(client: Tx | PrismaService, companyId: string) {
     const company = await client.company.findUnique({ where: { id: companyId }, select: { inventoryPolicy: true } });
     return company?.inventoryPolicy === "FIFO" ? "FIFO" : "FEFO";
+  }
+
+  private async requireProduct(client: Tx | PrismaService, companyId: string, productId: string) {
+    const product = await client.product.findFirst({ where: { id: productId, companyId, deletedAt: null } });
+    if (!product) throw new NotFoundException({ code: "PRODUCT_NOT_FOUND", message: "Mahsulot topilmadi." });
+    return product;
+  }
+
+  private convertToProductUnit(value: unknown, inputUnit: unknown, productUnit: unknown, field = "Miqdor") {
+    const quantity = parseQuantity(value, field);
+    const canonical = convertQuantity(quantity, inputUnit || productUnit, productUnit);
+    return roundQuantity(canonical);
+  }
+
+  private resolveCanonicalUnitCost(product: any, movement: any, quantity: number) {
+    if (movement.totalCost !== undefined && movement.totalCost !== null && movement.totalCost !== "") {
+      return quantity > 0 ? roundMoney(toNumber(movement.totalCost) / quantity, 6) : 0;
+    }
+
+    if (movement.cost === undefined || movement.cost === null || movement.cost === "") {
+      return toNumber(product.cost);
+    }
+
+    const inputUnit = movement.inputUnit ? normalizeUnit(movement.inputUnit) : normalizeUnit(product.unit);
+    const productUnit = normalizeUnit(product.unit);
+    const cost = toNumber(movement.cost);
+    if (inputUnit === productUnit) return cost;
+
+    const canonicalPerInputUnit = convertQuantity(1, inputUnit, productUnit);
+    return canonicalPerInputUnit > 0 ? roundMoney(cost / canonicalPerInputUnit, 6) : cost;
+  }
+
+  async reserveStock(companyId: string, input: any, actorUserId?: string) {
+    const tenantId = this.requireCompany(companyId);
+    return this.prisma.$transaction(async (tx) => {
+      await this.reserveStockInTx(tx, tenantId, input, actorUserId);
+      const item = await this.ensureStockItem(tx, tenantId, input.warehouseId, input.productId);
+      return this.stockDto(await tx.stockItem.findUnique({ where: { id: item.id }, include: { product: true, warehouse: true } }));
+    });
+  }
+
+  async releaseReservation(companyId: string, input: any, actorUserId?: string) {
+    const tenantId = this.requireCompany(companyId);
+    return this.prisma.$transaction(async (tx) => {
+      await this.releaseReservationInTx(tx, tenantId, input, actorUserId);
+      const item = await this.ensureStockItem(tx, tenantId, input.warehouseId, input.productId);
+      return this.stockDto(await tx.stockItem.findUnique({ where: { id: item.id }, include: { product: true, warehouse: true } }));
+    });
+  }
+
+  async consumeReservedStock(companyId: string, input: any, actorUserId?: string) {
+    const tenantId = this.requireCompany(companyId);
+    return this.prisma.$transaction(async (tx) => {
+      return this.consumeReservedStockInTx(tx, tenantId, input, actorUserId);
+    });
   }
 
   private async ensureStockItem(tx: Tx, companyId: string, warehouseId: string, productId: string) {
@@ -2663,6 +3364,12 @@ async createCategory(companyId: string, body: any) {
   }
 
   private async ensureDefaultWarehouse(companyId: string) {
+    const existing = await this.resolveDefaultWarehouse(companyId, true);
+    if (existing) return existing;
+    return this.prisma.warehouse.create({ data: { companyId, name: "Asosiy ombor", code: "MAIN" } });
+  }
+
+  private async resolveDefaultWarehouse(companyId: string, includeAnyActive: boolean) {
     const setting = await this.prisma.companySetting.findUnique({
       where: { companyId_key: { companyId, key: "platform" } },
       select: { value: true },
@@ -2679,22 +3386,20 @@ async createCategory(companyId: string, body: any) {
       : null;
     if (configured) return configured;
 
-    const existing = await this.prisma.warehouse.findFirst({
-      where: {
-        companyId,
-        status: "ACTIVE",
-        OR: [{ code: "MAIN" }, { name: "Asosiy ombor" }],
-      },
-      orderBy: { createdAt: "asc" },
-    }) || await this.prisma.warehouse.findFirst({ where: { companyId, status: "ACTIVE" }, orderBy: { createdAt: "asc" } });
-    if (existing) return existing;
-    return this.prisma.warehouse.create({ data: { companyId, name: "Asosiy ombor", code: "MAIN" } });
+    const byCode = await this.prisma.warehouse.findFirst({ where: { companyId, status: "ACTIVE", code: "MAIN" }, orderBy: { createdAt: "asc" } });
+    if (byCode) return byCode;
+    const byName = await this.prisma.warehouse.findFirst({ where: { companyId, status: "ACTIVE", name: "Asosiy ombor" }, orderBy: { createdAt: "asc" } });
+    if (byName) return byName;
+    return includeAnyActive
+      ? this.prisma.warehouse.findFirst({ where: { companyId, status: "ACTIVE" }, orderBy: { createdAt: "asc" } })
+      : null;
   }
 
   private async ensureDefaultCashbox(tx: Tx, companyId: string) {
     const existing = await tx.cashbox.findFirst({ where: { companyId, status: "ACTIVE" }, orderBy: { createdAt: "asc" } });
     if (existing) return existing;
-    return tx.cashbox.create({ data: { companyId, name: "Asosiy kassa", currency: "UZS" } });
+    const company = await tx.company.findUnique({ where: { id: companyId }, select: { currency: true } });
+    return tx.cashbox.create({ data: { companyId, name: "Asosiy kassa", currency: normalizeCurrency(company?.currency || "UZS") } });
   }
 
   private async createFinanceTx(tx: Tx, companyId: string, input: any) {
@@ -2771,14 +3476,14 @@ async createCategory(companyId: string, body: any) {
     if (!items.length) throw new BadRequestException({ code: "PURCHASE_ITEMS_REQUIRED", message: "Xarid itemlari kerak." });
     return items.map((item) => {
       const product = item.productId ? productMap.get(item.productId) : null;
-      const purchaseQuantity = parseQuantity(item.quantity);
-      const purchaseUnit = normalizeUnit(item.unit || product?.unit || "dona");
+      const purchaseQuantity = parseQuantity(item.purchaseQuantity ?? item.quantity);
+      const purchaseUnit = normalizeUnit(item.purchaseUnit || item.unit || product?.unit);
       const unit = product?.unit ? normalizeUnit(product.unit) : purchaseUnit;
-      const conversionFactor = convertQuantity(1, purchaseUnit, unit);
-      const quantity = roundQuantity(purchaseQuantity * conversionFactor);
-      const purchaseCost = roundMoney(item.cost ?? item.price);
-      const cost = roundMoney(conversionFactor > 0 ? purchaseCost / conversionFactor : purchaseCost);
+      const quantity = roundQuantity(convertQuantity(purchaseQuantity, purchaseUnit, unit));
+      const lineTotal = roundMoney(item.lineTotal ?? item.total ?? item.subtotal ?? item.purchasePrice ?? item.cost ?? item.price);
+      const cost = quantity > 0 ? roundMoney(lineTotal / quantity, 6) : 0;
       if (quantity <= 0) throw new BadRequestException({ code: "INVALID_QUANTITY", message: "Miqdor 0 dan katta bo'lsin." });
+      if (lineTotal < 0) throw new BadRequestException({ code: "INVALID_PURCHASE_PRICE", message: "Xarid narxi manfiy bo'lmasin." });
       return {
         productId: item.productId || null,
         productName: product?.name || item.productName || item.name || "Mahsulot",
@@ -2789,13 +3494,13 @@ async createCategory(companyId: string, body: any) {
         unit,
         cost,
         salePrice: item.salePrice === undefined ? null : roundMoney(item.salePrice),
-        subtotal: roundMoney(quantity * cost),
+        subtotal: lineTotal,
       };
     });
   }
 
   private normalizeBomMaterial(product: any, item: any) {
-    const productUnit = normalizeUnit(product?.unit || item?.unit || "dona");
+    const productUnit = normalizeUnit(product?.unit || item?.unit);
     const recipeUnit = normalizeUnit(item?.unit || productUnit);
     const quantity = parseQuantity(item?.quantity, "Xomashyo miqdori");
     const cost = product
@@ -2840,24 +3545,28 @@ async createCategory(companyId: string, body: any) {
         quantity,
         packSize: normalizedPackSize,
         packUnit: normalizeUnit(unit),
-        materials: Array.isArray(row.materials || row.packagingMaterials) ? (row.materials || row.packagingMaterials).map((material: any) => ({ productId: material.productId, quantity: parseQuantity(material.quantity, "Qadoq materiali") })).filter((material: any) => material.productId && material.quantity > 0) : [],
+        materials: Array.isArray(row.materials || row.packagingMaterials) ? (row.materials || row.packagingMaterials).map((material: any) => ({
+          productId: material.productId,
+          quantity: parseQuantity(material.quantity, "Qadoq materiali"),
+          unit: material.unit ? normalizeUnit(material.unit) : undefined,
+        })).filter((material: any) => material.productId && material.quantity > 0) : [],
       };
     }).filter((row: any) => row.quantity > 0 && row.packSize > 0);
   }
 
-  private async ensurePackagedVariant(tx: Tx, companyId: string, parentProductId: string, parentName: string, unit: string, row: any) {
+  private async ensurePackagedVariant(tx: Tx, companyId: string, parentProductId: string, parentName: string, parentUnit: string, row: any) {
     if (row.productId) {
       const existing = await tx.product.findFirst({ where: { id: row.productId, companyId, deletedAt: null } });
       if (!existing) throw new NotFoundException({ code: "PACKAGED_PRODUCT_NOT_FOUND", message: "Qadoqlangan SKU topilmadi." });
       if (normalizeUnit(existing.unit) !== "dona") throw new BadRequestException({ code: "PACKAGED_PRODUCT_UNIT_INVALID", message: "Qadoqlangan mahsulot birligi dona bo'lishi kerak." });
       return existing;
     }
-    const name = row.productName || `${parentName} ${row.packSize} ${unit}`;
+    const name = row.productName || `${parentName} ${row.packSize} ${parentUnit}`;
     const sku = `PKG-${parentProductId.slice(-8)}-${String(row.packSize).replace(".", "-")}`;
     return tx.product.upsert({
       where: { companyId_sku: { companyId, sku } },
-      update: { status: "ACTIVE", parentProductId, packSize: row.packSize, packUnit: row.packUnit || unit, isVariant: true },
-      create: { companyId, name, sku, type: "FINISHED_GOOD", unit, parentProductId, packSize: row.packSize, packUnit: row.packUnit || unit, isVariant: true, stock: 0 },
+      update: { status: "ACTIVE", unit: "dona", parentProductId, packSize: row.packSize, packUnit: row.packUnit || parentUnit, isVariant: true },
+      create: { companyId, name, sku, type: "FINISHED_GOOD", unit: "dona", parentProductId, packSize: row.packSize, packUnit: row.packUnit || parentUnit, isVariant: true, stock: 0 },
     });
   }
 
@@ -3026,11 +3735,19 @@ async createCategory(companyId: string, body: any) {
   }
 
   private supplierPriceDto(history: any) {
-    return { ...history, supplierName: history.supplier?.name || null, productName: history.product?.name || null, price: decimalToNumber(history.price) };
+    return {
+      ...history,
+      supplierName: history.supplier?.name || null,
+      productName: history.product?.name || null,
+      price: decimalToNumber(history.price),
+      purchaseQuantity: history.purchaseQuantity === null || history.purchaseQuantity === undefined ? null : decimalToNumber(history.purchaseQuantity),
+      canonicalUnitPrice: history.canonicalUnitPrice === null || history.canonicalUnitPrice === undefined ? null : decimalToNumber(history.canonicalUnitPrice),
+    };
   }
 
   private stockDto(stock: any) {
-    const nearestExpiry = stock.product?.batches?.filter((batch: any) => batch.expiryDate)?.sort((left: any, right: any) => new Date(left.expiryDate).getTime() - new Date(right.expiryDate).getTime())[0]?.expiryDate || null;
+    const stockBatches = stock.product?.batches?.filter((batch: any) => batch.warehouseId === stock.warehouseId && decimalToNumber(batch.remainingQuantity) > 0) || [];
+    const nearestExpiry = stockBatches.filter((batch: any) => batch.expiryDate)?.sort((left: any, right: any) => new Date(left.expiryDate).getTime() - new Date(right.expiryDate).getTime())[0]?.expiryDate || null;
     const expiryDays = nearestExpiry ? Math.ceil((new Date(nearestExpiry).getTime() - Date.now()) / 86_400_000) : null;
     return {
       id: stock.id,
@@ -3040,6 +3757,9 @@ async createCategory(companyId: string, body: any) {
       productId: stock.productId,
       productName: stock.product?.name,
       sku: stock.product?.sku,
+      type: stock.product?.type,
+      category: stock.product?.categoryRef?.name || stock.product?.category || null,
+      image: stock.product?.image || "",
       unit: stock.product?.unit || "dona",
       quantity: decimalToNumber(stock.quantity),
       reserved: decimalToNumber(stock.reserved),
@@ -3061,6 +3781,7 @@ async createCategory(companyId: string, body: any) {
       ...movement,
       quantity: decimalToNumber(movement.quantity),
       cost: movement.cost === null || movement.cost === undefined ? null : decimalToNumber(movement.cost),
+      batchNumber: movement.batch?.batchNumber || null,
     };
   }
 
@@ -3233,6 +3954,8 @@ async createCategory(companyId: string, body: any) {
         packaging: Array.isArray(order?.packaging) ? order.packaging : [],
         remainingBulkQuantity: decimalToNumber(order?.remainingBulkQuantity),
         warehouseId: order?.warehouseId || null,
+        materialWarehouseId: order?.materialWarehouseId || order?.warehouseId || null,
+        outputWarehouseId: order?.outputWarehouseId || order?.warehouseId || null,
         status: order?.status || "PLANNED",
         materialCost: decimalToNumber(order?.materialCost),
         overheadCost: decimalToNumber(order?.overheadCost),
@@ -3247,6 +3970,10 @@ async createCategory(companyId: string, body: any) {
         qualityStatus: order?.qualityStatus || order?.qualityControl?.status || null,
         qualityNote: order?.qualityNote || order?.qualityControl?.note || null,
         completionNote: order?.completionNote || null,
+        plannedDate: order?.plannedDate || null,
+        dueDate: order?.dueDate || null,
+        priority: order?.priority || null,
+        responsible: order?.responsible || null,
         startedAt: order?.startedAt || null,
         completedAt: order?.completedAt || null,
         cancelledAt: order?.cancelledAt || null,
@@ -3261,11 +3988,73 @@ async createCategory(companyId: string, body: any) {
 
   private productionOrderDto(order: any) {
     const { actualQuantity, ...orderWithoutLegacyQuantity } = order;
-    const normalWastePercent = order.bom?.normalWastePercent === null || order.bom?.normalWastePercent === undefined ? toNumber(order.recipeSnapshot?.normalWastePercent) || null : decimalToNumber(order.bom.normalWastePercent);
+    const snapshot = order.recipeSnapshot && typeof order.recipeSnapshot === "object" ? order.recipeSnapshot : null;
+    const normalWastePercent = this.getSnapshotNormalWastePercent(order);
     const wastePercent = decimalToNumber(order.wastePercent);
+    const plannedQuantity = decimalToNumber(order.plannedQuantity);
+    const outputQuantity = toNumber(snapshot?.outputQuantity || order.bom?.outputQuantity);
+    const productName = order.outputProductName || snapshot?.outputProductName || order.bom?.outputProductName || "";
+    const productId = order.outputProductId || snapshot?.outputProductId || order.bom?.outputProductId || null;
+    const materialSnapshot = Array.isArray(order.materialSnapshot) ? order.materialSnapshot as any[] : [];
+    const snapshotMaterials = Array.isArray(snapshot?.materials) ? snapshot.materials : [];
+    const requiredMaterials = materialSnapshot.length
+      ? materialSnapshot.map((material: any, index: number) => {
+        const planned = decimalToNumber(material.plannedQuantity ?? material.requiredQuantity);
+        const actual = material.actualQuantity === undefined ? planned : decimalToNumber(material.actualQuantity);
+        return {
+          id: material.recipeMaterialId || material.id || material.productId || `material-${index + 1}`,
+          productId: material.productId,
+          productName: material.productName,
+          sku: material.sku || "",
+          recipeQuantity: decimalToNumber(material.recipeQuantity ?? material.bomQuantity),
+          recipeUnit: material.recipeUnit || null,
+          quantity: planned,
+          bomQuantity: decimalToNumber(material.bomQuantity ?? material.recipeQuantity ?? planned),
+          requiredQuantity: planned,
+          plannedQuantity: planned,
+          actualQuantity: actual,
+          difference: decimalToNumber(material.difference ?? actual - planned),
+          differencePercent: decimalToNumber(material.differencePercent ?? (planned > 0 ? ((actual - planned) / planned) * 100 : 0)),
+          unit: this.safeNormalizeUnit(material.unit),
+          cost: decimalToNumber(material.cost),
+          actualCost: decimalToNumber(material.actualCost),
+          totalCost: planned * decimalToNumber(material.cost),
+          quantityOnHand: decimalToNumber(material.quantity),
+          warehouseQuantity: decimalToNumber(material.warehouseQuantity ?? material.quantity),
+          reserved: decimalToNumber(material.reserved),
+          reservedQuantity: decimalToNumber(material.reservedQuantity),
+          available: decimalToNumber(material.available),
+          availableQuantity: decimalToNumber(material.availableQuantity ?? material.available),
+          shortage: decimalToNumber(material.shortage),
+          missingQuantity: decimalToNumber(material.missingQuantity ?? material.shortage),
+          enough: Boolean(material.enough ?? decimalToNumber(material.shortage) <= 0),
+          allocations: Array.isArray(material.allocations) ? material.allocations : [],
+        };
+      })
+      : snapshotMaterials.map((material: any, index: number) => {
+        const factor = outputQuantity > 0 ? plannedQuantity / outputQuantity : 0;
+        const required = roundQuantity(toNumber(material.canonicalQuantity ?? material.quantity) * factor);
+        const cost = toNumber(material.currentUnitCost ?? material.cost);
+        return {
+          id: material.recipeMaterialId || material.id || material.productId || `material-${index + 1}`,
+          productId: material.productId,
+          productName: material.productName,
+          sku: material.sku || "",
+          recipeQuantity: toNumber(material.quantity),
+          recipeUnit: material.unit || material.recipeUnit || material.canonicalUnit,
+          quantity: required,
+          bomQuantity: toNumber(material.quantity),
+          requiredQuantity: required,
+          plannedQuantity: required,
+          actualQuantity: required,
+          unit: this.safeNormalizeUnit(material.canonicalUnit || material.unit),
+          cost,
+          totalCost: roundMoney(required * cost, 6),
+        };
+      });
     return {
       ...orderWithoutLegacyQuantity,
-      plannedQuantity: decimalToNumber(order.plannedQuantity),
+      plannedQuantity,
       producedQuantity: decimalToNumber(actualQuantity),
       actualQuantity: decimalToNumber(actualQuantity),
       acceptedQuantity: decimalToNumber(order.acceptedQuantity),
@@ -3275,10 +4064,15 @@ async createCategory(companyId: string, body: any) {
       wastePercent,
       normalWastePercent,
       abnormalWaste: normalWastePercent !== null && wastePercent > normalWastePercent,
-      recipeVersion: order.recipeVersion || order.bom?.version || null,
-      recipeSnapshot: order.recipeSnapshot || null,
+      abnormalWastePercent: normalWastePercent === null ? 0 : roundMoney(Math.max(wastePercent - normalWastePercent, 0), 4),
+      recipeVersion: order.recipeVersion || snapshot?.version || order.bom?.version || null,
+      bomVersion: order.recipeVersion || snapshot?.version || order.bom?.version || null,
+      recipeName: snapshot?.name || order.bom?.name || null,
+      recipeSnapshot: snapshot,
       packaging: Array.isArray(order.packaging) ? order.packaging : [],
       remainingBulkQuantity: decimalToNumber(order.remainingBulkQuantity),
+      materialWarehouseId: order.materialWarehouseId || order.warehouseId || null,
+      outputWarehouseId: order.outputWarehouseId || order.warehouseId || null,
       materialCost: decimalToNumber(order.materialCost),
       overheadCost: decimalToNumber(order.overheadCost),
       productionCost: decimalToNumber(order.productionCost),
@@ -3292,32 +4086,16 @@ async createCategory(companyId: string, body: any) {
       qualityStatus: order.qualityStatus || order.qualityControl?.status || null,
       qualityNote: order.qualityNote || order.qualityControl?.note || null,
       completionNote: order.completionNote || null,
+      plannedDate: order.plannedDate || null,
+      dueDate: order.dueDate || null,
+      priority: order.priority || null,
+      responsible: order.responsible || null,
       stages: order.stages?.map((stage: any) => ({ ...stage, status: stage.status === "PLANNED" ? "PENDING" : stage.status })) || [],
-      productId: order.outputProductId,
-      productName: order.outputProductName,
-      requiredMaterials: (Array.isArray(order.materialSnapshot) && order.materialSnapshot.length
-        ? order.materialSnapshot.map((material: any, index: number) => ({
-          id: material.recipeMaterialId || material.productId || `material-${index + 1}`,
-          productId: material.productId,
-          productName: material.productName,
-          quantity: decimalToNumber(material.plannedQuantity),
-          bomQuantity: decimalToNumber(material.bomQuantity ?? material.plannedQuantity),
-          requiredQuantity: decimalToNumber(material.plannedQuantity),
-          unit: this.safeNormalizeUnit(material.unit),
-          cost: decimalToNumber(material.cost),
-          totalCost: decimalToNumber(material.plannedQuantity) * decimalToNumber(material.cost),
-        }))
-        : order.bom?.materials?.map((material: any) => ({
-          id: material.id,
-          productId: material.productId,
-          productName: material.productName,
-          quantity: decimalToNumber(material.quantity),
-          bomQuantity: decimalToNumber(material.quantity),
-          requiredQuantity: decimalToNumber(material.quantity) * decimalToNumber(order.plannedQuantity) / Math.max(decimalToNumber(order.bom.outputQuantity), 1),
-          unit: this.safeNormalizeUnit(material.unit),
-          cost: decimalToNumber(material.cost),
-          totalCost: decimalToNumber(material.quantity) * decimalToNumber(material.cost),
-        })) || []),
+      productId,
+      productName,
+      outputProductId: productId,
+      outputProductName: productName,
+      requiredMaterials,
       bom: order.bom ? this.bomDto(order.bom) : null,
     };
   }
