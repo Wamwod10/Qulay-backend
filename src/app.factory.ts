@@ -21,6 +21,10 @@ export async function createConfiguredApp(): Promise<INestApplication> {
   (app as INestApplication & { set: (name: string, value: unknown) => void }).set("trust proxy", 1);
   app.use(json({ limit: "1mb" }));
   app.use(urlencoded({ extended: true, limit: "1mb" }));
+  app.use((_request, response, next) => {
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    next();
+  });
   app.use(securityHeadersMiddleware);
   app.use(createAuthRateLimitMiddleware());
   app.setGlobalPrefix("api");

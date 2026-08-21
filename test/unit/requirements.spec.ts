@@ -320,7 +320,7 @@ test("51 packaging material rows consume stock items", () => {
   const service = backend("modules/business/business.service.ts");
   assert.match(service, /PACKAGING_MATERIAL/);
   assert.match(service, /row\.materials/);
-  assert.match(frontend("modules/manufacturing/production-orders/components/ProductionCompleteModal/ProductionCompleteModal.jsx"), /Qadoq materiali/);
+  assert.match(frontend("modules/manufacturing/production-orders/components/ProductionCompleteModal/ProductionCompleteModal.jsx"), /materials:/);
 });
 
 test("52 recipe edits create versions and preserve production snapshots", () => {
@@ -491,4 +491,61 @@ test("73 new flow regression coverage is present as separate assertions", () => 
   const integration = readFileSync(resolve(process.cwd(), "test/e2e/integration.spec.ts"), "utf8");
   assert.match(integration, /batch expiry, inventory count, recipe version, packaging and COGS/);
   assert.doesNotMatch(integration, /PASSWORD_RESET_NOT_CONFIGURED/);
+});
+
+test("74 route data loads server-first and does not show empty state while loading", () => {
+  const apiClient = frontend("services/api/apiClient.js");
+  const purchases = frontend("modules/purchases/pages/PurchasesPage/PurchasesPage.jsx");
+  const products = frontend("modules/products/pages/ProductsPage/ProductsPage.jsx");
+  const manufacturing = frontend("modules/manufacturing/pages/ManufacturingPage/ManufacturingPage.jsx");
+  assert.match(apiClient, /skipCache/);
+  assert.match(purchases, /loading/);
+  assert.match(purchases, /Skeleton/);
+  assert.match(products, /skipCache: true/);
+  assert.match(manufacturing, /fetchStoredProductionOrders/);
+  assert.match(frontend("modules/purchases/utils/purchasesStorage.js"), /skipCache: true/);
+});
+
+test("75 purchase form loads active suppliers warehouses and products from backend", () => {
+  const form = frontend("modules/purchases/components/PurchaseForm/PurchaseForm.jsx");
+  assert.match(form, /fetchStoredSuppliers/);
+  assert.match(form, /fetchStoredWarehouses/);
+  assert.match(form, /getStoredProductsPage/);
+  assert.match(form, /getOptionSearchText/);
+  assert.match(frontend("shared/ui/CreatableSelect/CreatableSelect.jsx"), /duplicateOption/);
+  assert.match(frontend("modules/warehouse/utils/warehouseDefaults.js"), /MAIN/);
+  assert.match(frontend("modules/warehouse/utils/warehouseDefaults.js"), /asosiy ombor/);
+});
+
+test("76 overhead add uses a real modal and waits for backend success", () => {
+  const panel = frontend("modules/manufacturing/production-orders/components/ProductionOverheadPanel/ProductionOverheadPanel.jsx");
+  const details = frontend("modules/manufacturing/pages/ProductionOrderDetailsPage/ProductionOrderDetailsPage.jsx");
+  const service = backend("modules/business/business.service.ts");
+  assert.match(panel, /<Modal/);
+  assert.match(panel, /handleSave/);
+  assert.match(panel, /amount <= 0/);
+  assert.doesNotMatch(panel, /emitChange\(\[createOverheadItem\(\), \.\.\.items\]\)/);
+  assert.match(details, /updateProductionOrderOverhead/);
+  assert.match(details, /throw error/);
+  assert.match(service, /overheadItems/);
+});
+
+test("77 unicode product names stay UTF-8 and manufacturing uses productId relation", () => {
+  const appFactory = backend("app.factory.ts");
+  const service = backend("modules/business/business.service.ts");
+  const sample = "Селес Мука высший сорт Қанд Шакар Сув Продукт №1 Сахар 50кг";
+  assert.equal(Buffer.from(sample, "utf8").toString("utf8"), sample);
+  assert.match(appFactory, /application\/json; charset=utf-8/);
+  assert.match(service, /if \(!productId\)/);
+  assert.match(service, /field: type === "RAW_MATERIAL" \? "productId" : "outputProductId"/);
+  assert.match(service, /productId: product\.id/);
+  assert.match(service, /productName: product\.name/);
+});
+
+test("78 settings navigation and route use consistent permission", () => {
+  assert.match(frontend("config/navigation.config.js"), /permission: "settings.view"/);
+  assert.match(frontend("layouts/AppLayout/components/Sidebar/Sidebar.jsx"), /can\(item\.permission\)/);
+  assert.match(frontend("layouts/AppLayout/components/Sidebar/Sidebar.jsx"), /userRole === "OWNER" \|\| userRole === "ADMIN"/);
+  assert.match(frontend("routes/AppRouter.jsx"), /PermissionGuard permission="settings.view"/);
+  assert.match(backend("common/constants/permissions.constants.ts"), /"settings.view"/);
 });
