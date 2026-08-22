@@ -3616,6 +3616,9 @@ async createCategory(companyId: string, body: any) {
       const existing = await tx.product.findFirst({ where: { id: row.productId, companyId, deletedAt: null } });
       if (!existing) throw new NotFoundException({ code: "PACKAGED_PRODUCT_NOT_FOUND", message: "Qadoqlangan SKU topilmadi." });
       if (normalizeUnit(existing.unit) !== "dona") throw new BadRequestException({ code: "PACKAGED_PRODUCT_UNIT_INVALID", message: "Qadoqlangan mahsulot birligi dona bo'lishi kerak." });
+      if (!existing.isVariant && !existing.parentProductId && !existing.packSize) {
+        return existing;
+      }
       return tx.product.update({
         where: { id: existing.id },
         data: {
@@ -3850,6 +3853,7 @@ async createCategory(companyId: string, body: any) {
       productId: stock.productId,
       productName: stock.product?.name,
       sku: stock.product?.sku,
+      barcode: stock.product?.barcode,
       type: stock.product?.type,
       category: stock.product?.categoryRef?.name || stock.product?.category || null,
       image: stock.product?.image || "",
