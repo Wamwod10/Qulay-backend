@@ -2183,7 +2183,7 @@ async createCategory(companyId: string, body: any) {
       const defectQuantity = parseQuantity(body.defectQuantity ?? quality.defectQuantity ?? 0, "Brak miqdori");
       const wasteQuantity = parseQuantity(body.wasteQuantity ?? quality.wasteQuantity ?? 0, "Chiqindi miqdori");
       const packaging = this.normalizePackagingRows(body.packaging ?? order.packaging, order.unit);
-      const packagedTotal = roundQuantity(packaging.reduce((sum, row) => sum + row.quantity * row.packSize, 0));
+      const packagedTotal = roundQuantity(packaging.reduce((sum, row) => sum + row.quantity * (row.canonicalPackSize ?? row.packSize), 0));
       if (packagedTotal > acceptedQuantity) throw new BadRequestException({ code: "PACKAGING_EXCEEDS_OUTPUT", message: "Qadoqlangan jami miqdor mavjud mahsulotdan oshmoqda." });
 
       const startedSnapshot = Array.isArray(order.materialSnapshot) ? order.materialSnapshot as any[] : [];
@@ -2311,7 +2311,7 @@ async createCategory(companyId: string, body: any) {
         const variant = await this.ensurePackagedVariant(tx, tenantId, order.outputProductId, order.outputProductName || "Tayyor mahsulot", order.unit, row);
         const rowPackagingCost = packageMaterialCosts.get(row.id) || 0;
         const perPackPackagingCost = row.quantity > 0 ? rowPackagingCost / row.quantity : 0;
-        const packUnitCost = roundMoney(baseUnitCost * row.packSize + perPackPackagingCost, 6);
+        const packUnitCost = roundMoney(baseUnitCost * (row.canonicalPackSize ?? row.packSize) + perPackPackagingCost, 6);
         await this.adjustStockDelta(tx, tenantId, outputWarehouseId, variant.id, row.quantity, {
           type: "PRODUCE",
           reason: "PRODUCTION_PACKAGING",
@@ -3586,7 +3586,8 @@ async createCategory(companyId: string, body: any) {
         throw new BadRequestException({ code: "PACKAGING_COUNT_INTEGER", message: "Qadoq soni butun son bo'lishi kerak." });
       }
       const inputPackUnit = normalizeUnit(row.packUnit || unit);
-      const normalizedPackSize = convertQuantity(parseQuantity(row.packSize ?? row.size ?? 0, "Qadoq hajmi"), inputPackUnit, unit);
+      const enteredPackSize = parseQuantity(row.packSize ?? row.size ?? 0, "Qadoq hajmi");
+      const normalizedPackSize = roundQuantity(convertQuantity(enteredPackSize, inputPackUnit, unit));
       if (normalizedPackSize <= 0) {
         throw new BadRequestException({ code: "PACKAGING_SIZE_INVALID", message: "Qadoq hajmi 0 dan katta bo'lishi kerak." });
       }
@@ -3595,30 +3596,70 @@ async createCategory(companyId: string, body: any) {
         productId: row.productId || null,
         productName: String(row.productName || row.name || "").trim(),
         quantity,
-        packSize: normalizedPackSize,
-        packUnit: normalizeUnit(unit),
+        packSize: enteredPackSize,
+        packUnit: inputPackUnit,
+        canonicalPackSize: normalizedPackSize,
         materials: Array.isArray(row.materials || row.packagingMaterials) ? (row.materials || row.packagingMaterials).map((material: any) => ({
           productId: material.productId,
           quantity: parseQuantity(material.quantity, "Qadoq materiali"),
           unit: material.unit ? normalizeUnit(material.unit) : undefined,
         })).filter((material: any) => material.productId && material.quantity > 0) : [],
       };
-    }).filter((row: any) => row.quantity > 0 && row.packSize > 0);
+    }).filter((row: any) => row.quantity > 0 && row.canonicalPackSize > 0);
   }
 
   private async ensurePackagedVariant(tx: Tx, companyId: string, parentProductId: string, parentName: string, parentUnit: string, row: any) {
+    const displayPackUnit = normalizeUnit(row.packUnit || parentUnit);
+    const name = row.productName || `${parentName} ${row.packSize} ${displayPackUnit}`;
+
     if (row.productId) {
       const existing = await tx.product.findFirst({ where: { id: row.productId, companyId, deletedAt: null } });
       if (!existing) throw new NotFoundException({ code: "PACKAGED_PRODUCT_NOT_FOUND", message: "Qadoqlangan SKU topilmadi." });
       if (normalizeUnit(existing.unit) !== "dona") throw new BadRequestException({ code: "PACKAGED_PRODUCT_UNIT_INVALID", message: "Qadoqlangan mahsulot birligi dona bo'lishi kerak." });
-      return existing;
+      return tx.product.update({
+        where: { id: existing.id },
+        data: {
+          name,
+          status: "ACTIVE",
+          unit: "dona",
+          parentProductId,
+          packSize: row.packSize,
+          packUnit: displayPackUnit,
+          isVariant: true,
+        },
+      });
     }
-    const name = row.productName || `${parentName} ${row.packSize} ${parentUnit}`;
-    const sku = `PKG-${parentProductId.slice(-8)}-${String(row.packSize).replace(".", "-")}`;
+
+    const existingVariant = await tx.product.findFirst({
+      where: {
+        companyId,
+        parentProductId,
+        packSize: row.packSize,
+        packUnit: displayPackUnit,
+        deletedAt: null,
+      },
+    });
+
+    if (existingVariant) {
+      return tx.product.update({
+        where: { id: existingVariant.id },
+        data: {
+          name,
+          status: "ACTIVE",
+          unit: "dona",
+          parentProductId,
+          packSize: row.packSize,
+          packUnit: displayPackUnit,
+          isVariant: true,
+        },
+      });
+    }
+
+    const sku = `PKG-${parentProductId.slice(-8)}-${String(row.packSize).replace(".", "-")}-${displayPackUnit}`;
     return tx.product.upsert({
       where: { companyId_sku: { companyId, sku } },
-      update: { status: "ACTIVE", unit: "dona", parentProductId, packSize: row.packSize, packUnit: row.packUnit || parentUnit, isVariant: true },
-      create: { companyId, name, sku, type: "FINISHED_GOOD", unit: "dona", parentProductId, packSize: row.packSize, packUnit: row.packUnit || parentUnit, isVariant: true, stock: 0 },
+      update: { name, status: "ACTIVE", unit: "dona", parentProductId, packSize: row.packSize, packUnit: displayPackUnit, isVariant: true },
+      create: { companyId, name, sku, type: "FINISHED_GOOD", unit: "dona", parentProductId, packSize: row.packSize, packUnit: displayPackUnit, isVariant: true, stock: 0 },
     });
   }
 
