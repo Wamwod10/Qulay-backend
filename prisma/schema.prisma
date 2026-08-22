@@ -515,6 +515,7 @@ model Purchase {
   total         Decimal              @default(0) @db.Decimal(18, 2)
   paidAmount    Decimal              @default(0) @db.Decimal(18, 2)
   debtAmount    Decimal              @default(0) @db.Decimal(18, 2)
+  currency      String               @default("UZS")
   expectedDate  DateTime?
   orderDate     DateTime?
   receivedAt    DateTime?

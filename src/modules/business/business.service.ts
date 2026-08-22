@@ -875,14 +875,14 @@ async createCategory(companyId: string, body: any) {
   async getSupplier(companyId: string, id: string) {
     const supplier = await this.prisma.supplier.findFirst({
       where: { id, companyId: this.requireCompany(companyId), deletedAt: null },
-      include: { purchases: { orderBy: { createdAt: "desc" }, take: 20 }, products: true },
+      include: { purchases: { include: { items: { include: { product: true } } }, orderBy: { createdAt: "desc" }, take: 20 }, products: true },
     });
 
     if (!supplier) throw new NotFoundException({ code: "SUPPLIER_NOT_FOUND", message: "Yetkazib beruvchi topilmadi." });
 
     return {
       ...this.supplierDto(supplier),
-      purchases: supplier.purchases.map(this.purchaseDto),
+      purchases: supplier.purchases.map((purchase) => this.purchaseDto(purchase)),
       products: supplier.products.map(this.productDto),
     };
   }
@@ -966,19 +966,20 @@ async createCategory(companyId: string, body: any) {
 
     const purchases = await this.prisma.purchase.findMany({
       where,
-      include: { items: true },
+      include: { items: { include: { product: true } }, supplier: true, warehouse: true },
       orderBy: { createdAt: "desc" },
       take: 200,
     });
 
-    return { purchases: purchases.map(this.purchaseDto), data: purchases.map(this.purchaseDto) };
+    const data = purchases.map((purchase) => this.purchaseDto(purchase));
+    return { purchases: data, data };
   }
 
   async getPurchase(companyId: string, id: string) {
     const tenantId = this.requireCompany(companyId);
     const purchase = await this.prisma.purchase.findFirst({
       where: { id, companyId: tenantId },
-      include: { items: true, supplier: true, warehouse: true },
+      include: { items: { include: { product: true } }, supplier: true, warehouse: true },
     });
 
     if (!purchase) throw new NotFoundException({ code: "PURCHASE_NOT_FOUND", message: "Xarid topilmadi." });
@@ -1021,6 +1022,8 @@ async createCategory(companyId: string, body: any) {
     const warehouse = body.warehouseId ? await this.prisma.warehouse.findFirst({ where: { id: body.warehouseId, companyId: tenantId } }) : await this.ensureDefaultWarehouse(tenantId);
     if (body.warehouseId && !warehouse) throw new NotFoundException({ code: "WAREHOUSE_NOT_FOUND", message: "Ombor topilmadi." });
     if (paidAmount > total) throw new BadRequestException({ code: "OVERPAYMENT", message: "To'lov jami summadan oshmasin." });
+    const company = await this.prisma.company.findUnique({ where: { id: tenantId }, select: { currency: true } });
+    const currency = normalizeCurrency(body.currency || company?.currency || "UZS");
     const purchase = await this.prisma.$transaction(async (tx) => {
       const created = await tx.purchase.create({
         data: {
@@ -1035,6 +1038,7 @@ async createCategory(companyId: string, body: any) {
           total,
           paidAmount,
           debtAmount,
+          currency,
           expectedDate: parseOptionalDate(body.expectedDate),
           orderDate: parseOptionalDate(body.orderDate) || new Date(),
           note: body.note,
@@ -1101,6 +1105,7 @@ async createCategory(companyId: string, body: any) {
           total,
           paidAmount: total === undefined ? undefined : 0,
           debtAmount: total === undefined ? undefined : 0,
+          currency: body.currency === undefined ? undefined : normalizeCurrency(body.currency),
           items: items ? { create: items } : undefined,
         },
         include: { items: true },
@@ -1120,8 +1125,7 @@ async createCategory(companyId: string, body: any) {
         throw new ConflictException({ code: "PURCHASE_RECEIVE_BLOCKED", message: "Bu xaridni qabul qilib bo'lmaydi." });
       }
 
-      const company = await tx.company.findUnique({ where: { id: tenantId }, select: { currency: true } });
-      const currency = normalizeCurrency(body.currency || company?.currency || "UZS");
+      const currency = normalizeCurrency(body.currency || purchase.currency || "UZS");
       const receivedItems = Array.isArray(body.receivedItems)
         ? body.receivedItems
         : purchase.items.map((item) => ({
@@ -3952,21 +3956,34 @@ async createCategory(companyId: string, body: any) {
   }
 
   private purchaseDto(purchase: any) {
-    const items = purchase.items?.map((item: any) => ({
-      ...item,
-      quantity: decimalToNumber(item.quantity),
-      purchaseQuantity: item.purchaseQuantity === null || item.purchaseQuantity === undefined ? null : decimalToNumber(item.purchaseQuantity),
-      receivedQuantity: decimalToNumber(item.receivedQuantity),
-      cost: decimalToNumber(item.cost),
-      salePrice: item.salePrice === null || item.salePrice === undefined ? null : decimalToNumber(item.salePrice),
-      subtotal: decimalToNumber(item.subtotal),
-    })) || [];
+    const items = Array.isArray(purchase?.items)
+      ? purchase.items.map((item: any) => {
+        const quantity = decimalToNumber(item?.quantity);
+        const cost = decimalToNumber(item?.cost);
+        return {
+          ...item,
+          productName: item?.productName || item?.product?.name || "Mahsulot ko'rsatilmagan",
+          sku: item?.sku || item?.product?.sku || "",
+          quantity,
+          purchaseQuantity: item?.purchaseQuantity === null || item?.purchaseQuantity === undefined ? null : decimalToNumber(item.purchaseQuantity),
+          receivedQuantity: decimalToNumber(item?.receivedQuantity),
+          unit: item?.unit || item?.product?.unit || "dona",
+          purchaseUnit: item?.purchaseUnit || item?.unit || item?.product?.unit || "dona",
+          cost,
+          salePrice: item?.salePrice === null || item?.salePrice === undefined ? null : decimalToNumber(item.salePrice),
+          subtotal: item?.subtotal === null || item?.subtotal === undefined ? roundMoney(quantity * cost) : decimalToNumber(item.subtotal),
+        };
+      })
+      : [];
     return {
       ...purchase,
-      subtotal: decimalToNumber(purchase.subtotal),
-      total: decimalToNumber(purchase.total),
-      paidAmount: decimalToNumber(purchase.paidAmount),
-      debtAmount: decimalToNumber(purchase.debtAmount),
+      supplierName: purchase?.supplierName || purchase?.supplier?.name || null,
+      warehouseName: purchase?.warehouseName || purchase?.warehouse?.name || null,
+      currency: this.safeNormalizeCurrency(purchase?.currency),
+      subtotal: decimalToNumber(purchase?.subtotal),
+      total: decimalToNumber(purchase?.total),
+      paidAmount: decimalToNumber(purchase?.paidAmount),
+      debtAmount: decimalToNumber(purchase?.debtAmount),
       title: this.purchaseTitle(items),
       items,
     };
@@ -4052,6 +4069,14 @@ async createCategory(companyId: string, body: any) {
       return normalizeUnit(value || fallback);
     } catch {
       return normalizeUnit(fallback);
+    }
+  }
+
+  private safeNormalizeCurrency(value: unknown, fallback = "UZS") {
+    try {
+      return normalizeCurrency(value || fallback);
+    } catch {
+      return normalizeCurrency(fallback);
     }
   }
 
