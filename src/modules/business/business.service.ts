@@ -109,13 +109,13 @@ export class BusinessService {
     return {
       ...this.productDto(product),
       stockItems: product.stockItems.map(this.stockDto),
-      history: product.movements.map(this.movementDto),
+      history: product.movements.map((movement) => this.movementDto(movement)),
     };
   }
 
   async createProduct(companyId: string, body: any) {
     const tenantId = this.requireCompany(companyId);
-    const sku = String(body.sku || (await this.generateSku(tenantId))).trim();
+    const sku = await this.generateSku(this.prisma, tenantId);
     const name = String(body.name || "").trim();
     if (!name) throw new BadRequestException({ code: "PRODUCT_NAME_REQUIRED", message: "Mahsulot nomini kiriting." });
     if (!String(body.type || "").trim()) throw new BadRequestException({ code: "PRODUCT_TYPE_REQUIRED", message: "Mahsulot turini tanlang." });
@@ -257,23 +257,18 @@ export class BusinessService {
     if (body.unit !== undefined && !String(body.unit || "").trim()) {
       throw new BadRequestException({ code: "PRODUCT_UNIT_REQUIRED", field: "unit", message: "O'lchov birligini tanlang." });
     }
-    const nextSku = body.sku === undefined ? currentProduct.sku : String(body.sku || "").trim();
+    const nextSku = currentProduct.sku;
     const nextBarcode = body.barcode === undefined
       ? currentProduct.barcode
       : String(body.barcode || "").trim() || null;
     if (!nextSku) {
       throw new BadRequestException({ code: "PRODUCT_SKU_REQUIRED", field: "sku", message: "SKU kiriting." });
     }
-
-    const [skuDuplicate, barcodeDuplicate] = await Promise.all([
-      this.prisma.product.findFirst({ where: { companyId: tenantId, sku: nextSku, id: { not: id } }, select: { id: true } }),
+    const [barcodeDuplicate] = await Promise.all([
       nextBarcode
         ? this.prisma.product.findFirst({ where: { companyId: tenantId, barcode: nextBarcode, id: { not: id } }, select: { id: true } })
         : null,
     ]);
-    if (skuDuplicate) {
-      throw new ConflictException({ code: "SKU_DUPLICATE", field: "sku", message: "Bu SKU boshqa mahsulotda mavjud." });
-    }
     if (barcodeDuplicate) {
       throw new ConflictException({ code: "BARCODE_DUPLICATE", field: "barcode", message: "Bu shtrix-kod boshqa mahsulotda mavjud." });
     }
@@ -308,7 +303,7 @@ try {
     },
     data: {
       name: body.name,
-      sku: body.sku === undefined ? undefined : nextSku,
+      sku: undefined,
       barcode: body.barcode === undefined ? undefined : nextBarcode,
       type: body.type,
       category: categoryName,
@@ -467,7 +462,7 @@ if (body.cost !== undefined || body.salePrice !== undefined) {
       ...product,
       id: undefined,
       name: `${product.name} - nusxa`,
-      sku: await this.generateSku(companyId),
+      sku: await this.generateSku(this.prisma, companyId),
       barcode: "",
       stock: 0,
     });
@@ -778,7 +773,7 @@ async createCategory(companyId: string, body: any) {
       take: 200,
     });
 
-    return { movements: movements.map(this.movementDto), data: movements.map(this.movementDto) };
+    return { movements: movements.map((movement) => this.movementDto(movement)), data: movements.map((movement) => this.movementDto(movement)) };
   }
 
   async listInventoryCounts(companyId: string, query: Record<string, string | undefined> = {}) {
@@ -1947,7 +1942,7 @@ async createCategory(companyId: string, body: any) {
       this.prisma.productionOrder.findMany({ where, include: { bom: { include: { materials: true, outputProduct: true } }, stages: true }, orderBy: { createdAt: "desc" }, skip, take }),
       this.prisma.productionOrder.count({ where }),
     ]);
-    const data = orders.map((order) => this.safeProductionOrderDto(order));
+    const data = await this.productionOrdersWithWarehouseNames(tenantId, orders);
     return { orders: data, productionOrders: data, data, meta: getPaginationMeta(page, limit, total) };
   }
 
@@ -2061,12 +2056,12 @@ async createCategory(companyId: string, body: any) {
 
       return created;
     });
-    return this.productionOrderDto(order);
+    return (await this.productionOrdersWithWarehouseNames(tenantId, [order]))[0];
   }
 
   async startProduction(companyId: string, id: string, body: any, actorUserId?: string) {
     const tenantId = this.requireCompany(companyId);
-    return this.prisma.$transaction(async (tx) => {
+    const updatedOrder = await this.prisma.$transaction(async (tx) => {
       const order = await tx.productionOrder.findFirst({ where: { id, companyId: tenantId }, include: { bom: { include: { materials: true, outputProduct: true } }, stages: true } });
       if (!order) throw new NotFoundException({ code: "PRODUCTION_NOT_FOUND", message: "Ishlab chiqarish topilmadi." });
       if (order.status === "IN_PROGRESS") throw new ConflictException({ code: "PRODUCTION_ALREADY_STARTED", message: "Ishlab chiqarish allaqachon boshlangan." });
@@ -2158,13 +2153,14 @@ async createCategory(companyId: string, body: any) {
         include: { bom: { include: { materials: true, outputProduct: true } }, stages: true },
       });
       await this.writeAudit(tx, tenantId, actorUserId, "production.start", "production_order", order.id, { materialWarehouseId, outputWarehouseId, materialSnapshot });
-      return this.productionOrderDto(updated);
+      return updated;
     });
+    return (await this.productionOrdersWithWarehouseNames(tenantId, [updatedOrder]))[0];
   }
 
   async completeProduction(companyId: string, id: string, body: any, actorUserId?: string) {
     const tenantId = this.requireCompany(companyId);
-    return this.prisma.$transaction(async (tx) => {
+    const completedOrder = await this.prisma.$transaction(async (tx) => {
       const order = await tx.productionOrder.findFirst({ where: { id, companyId: tenantId }, include: { bom: { include: { materials: true, outputProduct: true } }, stages: true } });
       if (!order) throw new NotFoundException({ code: "PRODUCTION_NOT_FOUND", message: "Ishlab chiqarish topilmadi." });
       if (order.status === "COMPLETED") throw new ConflictException({ code: "PRODUCTION_ALREADY_COMPLETED", message: "Ishlab chiqarish allaqachon yakunlangan." });
@@ -2292,7 +2288,7 @@ async createCategory(companyId: string, body: any) {
       const baseUnitCost = acceptedQuantity > 0 ? baseProductionCost / acceptedQuantity : 0;
       const actualUnitCost = acceptedQuantity > 0 ? roundMoney(actualProductionCost / acceptedQuantity, 6) : 0;
       const bulkQuantity = roundQuantity(acceptedQuantity - packagedTotal);
-      const lotNumber = body.batchNumber || `MFG-${order.number}-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}`;
+      const lotNumber = body.batchNumber || await this.generateLotNumber(tx, tenantId, "LOT");
       if (bulkQuantity > 0) {
         await this.adjustStockDelta(tx, tenantId, outputWarehouseId, order.outputProductId, bulkQuantity, {
           type: "PRODUCE",
@@ -2377,8 +2373,9 @@ async createCategory(companyId: string, body: any) {
         include: { bom: { include: { materials: true, outputProduct: true } }, stages: true },
       });
       await this.writeAudit(tx, tenantId, actorUserId, "production.complete", "production_order", order.id, { producedQuantity, acceptedQuantity, packaging: packagedRows, yieldPercent, wastePercent, rawMaterialCost, packagingMaterialCost, overheadCost, actualProductionCost, outputWarehouseId });
-      return this.productionOrderDto(updated);
+      return updated;
     });
+    return (await this.productionOrdersWithWarehouseNames(tenantId, [completedOrder]))[0];
   }
 
   async cancelProduction(companyId: string, id: string, body: any = {}, actorUserId?: string) {
@@ -2748,9 +2745,10 @@ async createCategory(companyId: string, body: any) {
   }
 
   async getProductionOrder(companyId: string, id: string) {
-    const order = await this.prisma.productionOrder.findFirst({ where: { id, companyId: this.requireCompany(companyId) }, include: { bom: { include: { materials: true } }, stages: true } });
+    const tenantId = this.requireCompany(companyId);
+    const order = await this.prisma.productionOrder.findFirst({ where: { id, companyId: tenantId }, include: { bom: { include: { materials: true } }, stages: true } });
     if (!order) throw new NotFoundException({ code: "PRODUCTION_NOT_FOUND", message: "Ishlab chiqarish topilmadi." });
-    return this.productionOrderDto(order);
+    return (await this.productionOrdersWithWarehouseNames(tenantId, [order]))[0];
   }
 
   async listFinance(companyId: string, query: Record<string, string | undefined>) {
@@ -3062,7 +3060,7 @@ async createCategory(companyId: string, body: any) {
 
     const allocations: any[] = [];
     if (delta > 0) {
-      const batchNumber = movement.batchNumber || `${movement.sourceType || "MANUAL"}-${movement.sourceId || Date.now()}-${randomUUID().slice(0, 8)}`;
+      const batchNumber = movement.batchNumber || await this.generateLotNumber(tx, companyId);
       const existingBatch = movement.batchNumber
         ? await tx.batch.findFirst({ where: { companyId, batchNumber, productId, warehouseId } })
         : null;
@@ -3191,7 +3189,7 @@ async createCategory(companyId: string, body: any) {
         await tx.batch.create({
           data: {
             companyId,
-            batchNumber: `LEGACY-${warehouseId.slice(-6)}-${productId.slice(-6)}`,
+            batchNumber: await this.generateLotNumber(tx, companyId, "LOT"),
             productId,
             warehouseId,
             quantity: missing,
@@ -3494,9 +3492,47 @@ async createCategory(companyId: string, body: any) {
     return transaction;
   }
 
-  private async generateSku(companyId: string) {
-    const count = await this.prisma.product.count({ where: { companyId } });
-    return String(1000 + count + 1);
+  private async generateSku(client: Tx | PrismaService, companyId: string) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const sku = String(100000 + Math.floor(Math.random() * 900000));
+      const existing = await client.product.findFirst({ where: { companyId, sku }, select: { id: true } });
+      if (!existing) return sku;
+    }
+
+    throw new ConflictException({ code: "SKU_GENERATION_FAILED", field: "sku", message: "SKU yaratib bo'lmadi. Qayta urinib ko'ring." });
+  }
+
+  private async generateLotNumber(client: Tx | PrismaService, companyId: string, prefix = "LOT") {
+    const year = new Date().getFullYear();
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const count = await client.batch.count({ where: { companyId } });
+      const batchNumber = `${prefix}-${year}-${String(count + attempt + 1).padStart(6, "0")}`;
+      const existing = await client.batch.findFirst({ where: { companyId, batchNumber }, select: { id: true } });
+      if (!existing) return batchNumber;
+    }
+
+    throw new ConflictException({ code: "LOT_GENERATION_FAILED", message: "Lot raqami yaratib bo'lmadi. Qayta urinib ko'ring." });
+  }
+
+  private async productionOrdersWithWarehouseNames(companyId: string, orders: any[]) {
+    const warehouseIds = [...new Set(
+      orders.flatMap((order) => [
+        order.materialWarehouseId || order.warehouseId,
+        order.outputWarehouseId || order.warehouseId,
+      ]).filter(Boolean),
+    )] as string[];
+    const warehouses = warehouseIds.length
+      ? await this.prisma.warehouse.findMany({ where: { companyId, id: { in: warehouseIds } }, select: { id: true, name: true } })
+      : [];
+    const warehouseMap = new Map(warehouses.map((warehouse) => [warehouse.id, warehouse.name]));
+
+    return orders.map((order) => this.safeProductionOrderDto({
+      ...order,
+      materialWarehouseName: warehouseMap.get(order.materialWarehouseId || order.warehouseId) || null,
+      outputWarehouseName: warehouseMap.get(order.outputWarehouseId || order.warehouseId) || null,
+      warehouseName: warehouseMap.get(order.warehouseId) || null,
+    }));
   }
 
   private async writeAudit(client: Tx | PrismaService, companyId: string, actorUserId: string | undefined, action: string, targetType: string, targetId: string, metadata: any = {}) {
@@ -3658,7 +3694,7 @@ async createCategory(companyId: string, body: any) {
       });
     }
 
-    const sku = `PKG-${parentProductId.slice(-8)}-${String(row.packSize).replace(".", "-")}-${displayPackUnit}`;
+    const sku = await this.generateSku(tx, companyId);
     return tx.product.upsert({
       where: { companyId_sku: { companyId, sku } },
       update: { name, status: "ACTIVE", unit: "dona", parentProductId, packSize: row.packSize, packUnit: displayPackUnit, isVariant: true },
@@ -3814,8 +3850,11 @@ async createCategory(companyId: string, body: any) {
 
   private batchDto(batch: any) {
     const expiryDays = batch.expiryDate ? Math.ceil((new Date(batch.expiryDate).getTime() - Date.now()) / 86_400_000) : null;
+    const displayBatchNumber = this.displayBatchNumber(batch);
     return {
       ...batch,
+      displayBatchNumber,
+      lotNumber: displayBatchNumber,
       productName: batch.product?.name,
       warehouseName: batch.warehouse?.name,
       quantity: decimalToNumber(batch.quantity),
@@ -3874,11 +3913,14 @@ async createCategory(companyId: string, body: any) {
   }
 
   private movementDto(movement: any) {
+    const displayBatchNumber = movement.batch ? this.displayBatchNumber(movement.batch) : null;
     return {
       ...movement,
       quantity: decimalToNumber(movement.quantity),
       cost: movement.cost === null || movement.cost === undefined ? null : decimalToNumber(movement.cost),
-      batchNumber: movement.batch?.batchNumber || null,
+      batchNumber: displayBatchNumber,
+      displayBatchNumber,
+      lotNumber: displayBatchNumber,
     };
   }
 
@@ -3890,22 +3932,43 @@ async createCategory(companyId: string, body: any) {
     };
   }
 
+  private purchaseTitle(items: any[]) {
+    const names = items.map((item) => String(item.productName || "").trim()).filter(Boolean);
+    if (!names.length) return "Mahsulot ko'rsatilmagan";
+    if (names.length === 1) return names[0];
+    if (names.length === 2) return names.join(", ");
+    return `${names.slice(0, 2).join(", ")} + yana ${names.length - 2} ta`;
+  }
+
+  private displayBatchNumber(batch: any) {
+    const raw = String(batch?.batchNumber || "").trim();
+    if (/^LOT-\d{4}-\d{6}$/.test(raw) || /^LOT-\d{6}$/.test(raw)) return raw;
+
+    const createdAt = batch?.createdAt ? new Date(batch.createdAt) : null;
+    const year = createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt.getFullYear() : new Date().getFullYear();
+    const digits = String(batch?.id || raw || "0").replace(/\D/g, "");
+    const suffix = digits.slice(-6).padStart(6, "0");
+    return `LOT-${year}-${suffix}`;
+  }
+
   private purchaseDto(purchase: any) {
+    const items = purchase.items?.map((item: any) => ({
+      ...item,
+      quantity: decimalToNumber(item.quantity),
+      purchaseQuantity: item.purchaseQuantity === null || item.purchaseQuantity === undefined ? null : decimalToNumber(item.purchaseQuantity),
+      receivedQuantity: decimalToNumber(item.receivedQuantity),
+      cost: decimalToNumber(item.cost),
+      salePrice: item.salePrice === null || item.salePrice === undefined ? null : decimalToNumber(item.salePrice),
+      subtotal: decimalToNumber(item.subtotal),
+    })) || [];
     return {
       ...purchase,
       subtotal: decimalToNumber(purchase.subtotal),
       total: decimalToNumber(purchase.total),
       paidAmount: decimalToNumber(purchase.paidAmount),
       debtAmount: decimalToNumber(purchase.debtAmount),
-      items: purchase.items?.map((item: any) => ({
-        ...item,
-        quantity: decimalToNumber(item.quantity),
-        purchaseQuantity: item.purchaseQuantity === null || item.purchaseQuantity === undefined ? null : decimalToNumber(item.purchaseQuantity),
-        receivedQuantity: decimalToNumber(item.receivedQuantity),
-        cost: decimalToNumber(item.cost),
-        salePrice: item.salePrice === null || item.salePrice === undefined ? null : decimalToNumber(item.salePrice),
-        subtotal: decimalToNumber(item.subtotal),
-      })) || [],
+      title: this.purchaseTitle(items),
+      items,
     };
   }
 
@@ -4049,8 +4112,11 @@ async createCategory(companyId: string, body: any) {
         packaging: Array.isArray(order?.packaging) ? order.packaging : [],
         remainingBulkQuantity: decimalToNumber(order?.remainingBulkQuantity),
         warehouseId: order?.warehouseId || null,
+        warehouseName: order?.warehouseName || null,
         materialWarehouseId: order?.materialWarehouseId || order?.warehouseId || null,
+        materialWarehouseName: order?.materialWarehouseName || null,
         outputWarehouseId: order?.outputWarehouseId || order?.warehouseId || null,
+        outputWarehouseName: order?.outputWarehouseName || null,
         status: order?.status || "PLANNED",
         materialCost: decimalToNumber(order?.materialCost),
         overheadCost: decimalToNumber(order?.overheadCost),
@@ -4167,7 +4233,10 @@ async createCategory(companyId: string, body: any) {
       packaging: Array.isArray(order.packaging) ? order.packaging : [],
       remainingBulkQuantity: decimalToNumber(order.remainingBulkQuantity),
       materialWarehouseId: order.materialWarehouseId || order.warehouseId || null,
+      materialWarehouseName: order.materialWarehouseName || null,
       outputWarehouseId: order.outputWarehouseId || order.warehouseId || null,
+      outputWarehouseName: order.outputWarehouseName || null,
+      warehouseName: order.warehouseName || null,
       materialCost: decimalToNumber(order.materialCost),
       overheadCost: decimalToNumber(order.overheadCost),
       productionCost: decimalToNumber(order.productionCost),
