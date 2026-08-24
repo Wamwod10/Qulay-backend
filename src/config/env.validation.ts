@@ -33,5 +33,8 @@ export function validateEnv(config: Record<string, unknown>) {
     FRONTEND_URL: frontendUrl || "http://localhost:5173",
     SUPER_ADMIN_EMAIL: superAdminEmail,
     SUPER_ADMIN_PASSWORD: superAdminPassword,
+    FX_PROVIDER: String(config.FX_PROVIDER || "exchangerate-api"),
+    FX_API_KEY: String(config.FX_API_KEY || ""),
+    FX_RATE_TTL_MINUTES: Number(config.FX_RATE_TTL_MINUTES || 45),
   };
 }

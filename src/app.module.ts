@@ -11,6 +11,7 @@ import { ModuleAccessGuard } from "./common/guards/module-access.guard";
 import { AuthModule } from "./core/auth/auth.module";
 import { PlatformAdminModule } from "./core/platform-admin/platform-admin.module";
 import { BusinessModule } from "./modules/business/business.module";
+import { FxModule } from "./modules/fx/fx.module";
 import { HealthModule } from "./health/health.module";
 import { validateEnv } from "./config/env.validation";
 import appConfig from "./config/app.config";
@@ -30,6 +31,7 @@ import storageConfig from "./config/storage.config";
     DatabaseModule,
     AuthModule,
     PlatformAdminModule,
+    FxModule,
     BusinessModule,
     HealthModule,
   ],

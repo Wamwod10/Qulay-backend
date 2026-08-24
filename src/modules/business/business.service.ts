@@ -2971,11 +2971,11 @@ async createCategory(companyId: string, body: any) {
     const scope = body.scope || "company";
     const settings = body.settings || body.value || body;
 
-    const requestedCurrency = settings?.formats?.currency || settings?.defaults?.currency || settings?.currency;
-    if (requestedCurrency) {
+    const requestedBaseCurrency = settings?.formats?.baseCurrency || settings?.baseCurrency;
+    if (requestedBaseCurrency) {
       await this.prisma.company.update({
         where: { id: tenantId },
-        data: { currency: normalizeCurrency(requestedCurrency) },
+        data: { currency: normalizeCurrency(requestedBaseCurrency) },
       });
     }
 
