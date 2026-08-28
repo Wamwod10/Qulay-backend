@@ -13,6 +13,7 @@ import { PrismaService } from "../../database/prisma.service";
 type Tx = Prisma.TransactionClient;
 
 const activeWhere = { deletedAt: null };
+const UNCATEGORIZED_CATEGORY_FILTER = "__uncategorized__";
 
 @Injectable()
 export class BusinessService {
@@ -57,11 +58,24 @@ export class BusinessService {
     }
     if (query.type) where.type = query.type;
     const and: any[] = [];
-    if (query.category) {
+    const categoryFilter = query.category?.trim();
+    if (categoryFilter === UNCATEGORIZED_CATEGORY_FILTER) {
+      and.push({
+        AND: [
+          { categoryId: null },
+          { OR: [{ category: null }, { category: "" }] },
+        ],
+      });
+    } else if (categoryFilter) {
+      const selectedCategory = await this.prisma.category.findFirst({
+        where: { id: categoryFilter, companyId: tenantId },
+        select: { name: true },
+      });
+
       and.push({
         OR: [
-          { categoryId: query.category },
-          { category: query.category },
+          { categoryId: categoryFilter },
+          { category: selectedCategory?.name || categoryFilter },
         ],
       });
     }
