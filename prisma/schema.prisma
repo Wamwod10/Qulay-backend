@@ -995,3 +995,18 @@ model SupplierPriceHistory {
   @@index([companyId, productId, date])
   @@index([supplierId, productId])
 }
+
+
+model FxRateCache {
+  id           String   @id @default(cuid())
+  baseCurrency String   @unique
+  rates        Json
+  provider     String
+  fetchedAt    DateTime
+  effectiveAt  String?
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([expiresAt])
+}

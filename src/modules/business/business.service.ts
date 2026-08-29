@@ -9,6 +9,7 @@ import { decimalToNumber, roundMoney, toNumber } from "../../common/utils/money.
 import { convertQuantity, normalizeUnit, parseQuantity, roundQuantity, UNIT_OPTIONS } from "../../common/utils/unit.util";
 import { getPagination, getPaginationMeta } from "../../common/utils/pagination.util";
 import { PrismaService } from "../../database/prisma.service";
+import { FxService } from "../fx/fx.service";
 
 type Tx = Prisma.TransactionClient;
 
@@ -19,7 +20,10 @@ const UNCATEGORIZED_CATEGORY_FILTER = "__uncategorized__";
 export class BusinessService {
   private readonly logger = new Logger(BusinessService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly fx: FxService,
+  ) {}
 
   requireCompany(companyId?: string | null) {
     if (!companyId || companyId === "platform") {
@@ -1323,27 +1327,32 @@ async createCategory(companyId: string, body: any) {
   async holdSale(companyId: string, body: any) {
     const tenantId = this.requireCompany(companyId);
     const normalized: any = this.normalizeSalePayload(body);
-    await this.validateProductIds(this.prisma, tenantId, normalized.items.map((item) => item.productId));
-    await this.applyProductUnits(this.prisma, tenantId, normalized.items);
-    if (normalized.id) {
-      const existing = await this.prisma.sale.findFirst({ where: { id: normalized.id, companyId: tenantId } });
-      if (!existing) throw new NotFoundException({ code: "SALE_NOT_FOUND", message: "Savdo topilmadi." });
-    }
-    const sale = await this.prisma.sale.upsert({
-      where: normalized.id ? { id: normalized.id } : { companyId_number: { companyId: tenantId, number: normalized.number || (await this.generateNumber(this.prisma, tenantId, "sale")) } },
-      create: {
-        ...this.saleCreateData(tenantId, normalized, "DRAFT"),
-        number: normalized.number || (await this.generateNumber(this.prisma, tenantId, "sale")),
-        items: { create: normalized.items },
-      },
-      update: {
-        ...this.saleUpdateData(normalized, "DRAFT"),
-        items: { deleteMany: {}, create: normalized.items },
-      },
-      include: { items: true, payments: true, returns: true },
-    });
 
-    return this.saleDto(sale);
+    return this.prisma.$transaction(async (tx) => {
+      await this.validateProductIds(tx, tenantId, normalized.items.map((item) => item.productId));
+      await this.applyProductUnits(tx, tenantId, normalized.items);
+      if (normalized.id) {
+        const existing = await tx.sale.findFirst({ where: { id: normalized.id, companyId: tenantId } });
+        if (!existing) throw new NotFoundException({ code: "SALE_NOT_FOUND", message: "Savdo topilmadi." });
+      }
+
+      const number = normalized.number || (await this.generateNumber(tx, tenantId, "sale"));
+      const sale = await tx.sale.upsert({
+        where: normalized.id ? { id: normalized.id } : { companyId_number: { companyId: tenantId, number } },
+        create: {
+          ...this.saleCreateData(tenantId, normalized, "DRAFT"),
+          number,
+          items: { create: normalized.items },
+        },
+        update: {
+          ...this.saleUpdateData(normalized, "DRAFT"),
+          items: { deleteMany: {}, create: normalized.items },
+        },
+        include: { items: true, payments: true, returns: true },
+      });
+
+      return this.saleDto(sale);
+    });
   }
 
   async completeSale(companyId: string, body: any, idempotencyKey?: string, actorUserId?: string) {
@@ -2966,6 +2975,112 @@ async createCategory(companyId: string, body: any) {
     return this.reports(companyId);
   }
 
+  private convertEmbeddedMoney(value: any, factor: number): any {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.convertEmbeddedMoney(item, factor));
+    }
+    if (!value || typeof value !== "object") return value;
+
+    const moneyKeys = new Set([
+      "cost",
+      "unitCost",
+      "currentUnitCost",
+      "actualCost",
+      "totalCost",
+      "price",
+      "amount",
+      "subtotal",
+      "total",
+      "materialCost",
+      "overheadCost",
+      "productionCost",
+      "actualMaterialCost",
+      "actualProductionCost",
+      "actualUnitCost",
+      "packagingCost",
+    ]);
+
+    return Object.fromEntries(Object.entries(value).map(([key, raw]) => {
+      if (moneyKeys.has(key) && raw !== null && raw !== "" && Number.isFinite(Number(raw))) {
+        return [key, roundMoney(Number(raw) * factor, 6)];
+      }
+      return [key, this.convertEmbeddedMoney(raw, factor)];
+    }));
+  }
+
+  private async changeCompanyCurrency(companyId: string, requestedCurrency: unknown, actorUserId?: string) {
+    const tenantId = this.requireCompany(companyId);
+    const nextCurrency = normalizeCurrency(requestedCurrency);
+    const company = await this.prisma.company.findUnique({
+      where: { id: tenantId },
+      select: { currency: true },
+    });
+    const currentCurrency = normalizeCurrency(company?.currency || "UZS");
+    if (currentCurrency === nextCurrency) return;
+
+    const fx = await this.fx.getRate(currentCurrency, nextCurrency).catch(() => null);
+    if (!fx?.rate || !Number.isFinite(fx.rate) || fx.rate <= 0) {
+      throw new BadRequestException({
+        code: "FX_RATE_UNAVAILABLE",
+        message: `${currentCurrency} dan ${nextCurrency} ga joriy valyuta kursini olib bo'lmadi. Keyinroq qayta urinib ko'ring.`,
+      });
+    }
+
+    const factor = fx.rate;
+    const f = Prisma.sql`CAST(${factor} AS numeric)`;
+    const cid = tenantId;
+
+    await this.prisma.$transaction(async (tx) => {
+      // Monetary values in the legacy schema are stored in Company.currency.
+      // Currency change is intentionally rare and atomic: convert persisted
+      // amounts first, then switch Company.currency so no value is merely relabelled.
+      await tx.$executeRaw(Prisma.sql`UPDATE "Product" SET "cost" = ROUND("cost" * ${f}, 2), "salePrice" = CASE WHEN "salePrice" IS NULL THEN NULL ELSE ROUND("salePrice" * ${f}, 2) END WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "StockItem" SET "cost" = ROUND("cost" * ${f}, 2) WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "StockMovement" SET "cost" = CASE WHEN "cost" IS NULL THEN NULL ELSE ROUND("cost" * ${f}, 2) END WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "Batch" SET "unitCost" = ROUND("unitCost" * ${f}, 6) WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "BatchConsumption" SET "unitCost" = ROUND("unitCost" * ${f}, 6) WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "Supplier" SET "debtBalance" = ROUND("debtBalance" * ${f}, 2) WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "Purchase" SET "subtotal" = ROUND("subtotal" * ${f}, 2), "total" = ROUND("total" * ${f}, 2), "paidAmount" = ROUND("paidAmount" * ${f}, 2), "debtAmount" = ROUND("debtAmount" * ${f}, 2), "currency" = ${nextCurrency} WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "PurchaseItem" SET "cost" = ROUND("cost" * ${f}, 6), "salePrice" = CASE WHEN "salePrice" IS NULL THEN NULL ELSE ROUND("salePrice" * ${f}, 2) END, "subtotal" = ROUND("subtotal" * ${f}, 2) WHERE "purchaseId" IN (SELECT "id" FROM "Purchase" WHERE "companyId" = ${cid})`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "Customer" SET "creditLimit" = ROUND("creditLimit" * ${f}, 2), "debtBalance" = ROUND("debtBalance" * ${f}, 2) WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "Agent" SET "targetAmount" = ROUND("targetAmount" * ${f}, 2), "balance" = ROUND("balance" * ${f}, 2) WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "Sale" SET "subtotal" = ROUND("subtotal" * ${f}, 2), "discountValue" = CASE WHEN "discountType" = 'AMOUNT' THEN ROUND("discountValue" * ${f}, 2) ELSE "discountValue" END, "discount" = ROUND("discount" * ${f}, 2), "total" = ROUND("total" * ${f}, 2), "paidAmount" = ROUND("paidAmount" * ${f}, 2), "debtAmount" = ROUND("debtAmount" * ${f}, 2), "returnedAmount" = ROUND("returnedAmount" * ${f}, 2), "netTotal" = ROUND("netTotal" * ${f}, 2), "cogs" = ROUND("cogs" * ${f}, 6), "profit" = ROUND("profit" * ${f}, 6) WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "SaleItem" SET "price" = ROUND("price" * ${f}, 2), "cost" = ROUND("cost" * ${f}, 2), "subtotal" = ROUND("subtotal" * ${f}, 2), "cogs" = ROUND("cogs" * ${f}, 6) WHERE "saleId" IN (SELECT "id" FROM "Sale" WHERE "companyId" = ${cid})`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "SalePayment" SET "amount" = ROUND("amount" * ${f}, 2) WHERE "saleId" IN (SELECT "id" FROM "Sale" WHERE "companyId" = ${cid})`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "SaleReturn" SET "refundAmount" = ROUND("refundAmount" * ${f}, 2) WHERE "saleId" IN (SELECT "id" FROM "Sale" WHERE "companyId" = ${cid})`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "Cashbox" SET "balance" = ROUND("balance" * ${f}, 2), "currency" = ${nextCurrency} WHERE "companyId" = ${cid} AND "currency" = ${currentCurrency}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "FinanceTransaction" SET "amount" = ROUND("amount" * ${f}, 2) WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "Bom" SET "overheadCost" = ROUND("overheadCost" * ${f}, 2) WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "BomMaterial" SET "cost" = ROUND("cost" * ${f}, 2) WHERE "bomId" IN (SELECT "id" FROM "Bom" WHERE "companyId" = ${cid})`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "ProductionOrder" SET "materialCost" = ROUND("materialCost" * ${f}, 2), "overheadCost" = ROUND("overheadCost" * ${f}, 2), "productionCost" = ROUND("productionCost" * ${f}, 2), "unitCost" = ROUND("unitCost" * ${f}, 2), "actualMaterialCost" = ROUND("actualMaterialCost" * ${f}, 6), "actualProductionCost" = ROUND("actualProductionCost" * ${f}, 6), "actualUnitCost" = ROUND("actualUnitCost" * ${f}, 6), "currency" = ${nextCurrency} WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "Employee" SET "salary" = ROUND("salary" * ${f}, 2) WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "Payroll" SET "grossAmount" = ROUND("grossAmount" * ${f}, 2), "advances" = ROUND("advances" * ${f}, 2), "bonuses" = ROUND("bonuses" * ${f}, 2), "penalties" = ROUND("penalties" * ${f}, 2), "netAmount" = ROUND("netAmount" * ${f}, 2), "paidAmount" = ROUND("paidAmount" * ${f}, 2), "debtAmount" = ROUND("debtAmount" * ${f}, 2) WHERE "companyId" = ${cid}`);
+      await tx.$executeRaw(Prisma.sql`UPDATE "SupplierPriceHistory" SET "price" = ROUND("price" * ${f}, 6), "canonicalUnitPrice" = CASE WHEN "canonicalUnitPrice" IS NULL THEN NULL ELSE ROUND("canonicalUnitPrice" * ${f}, 6) END, "currency" = ${nextCurrency} WHERE "companyId" = ${cid}`);
+
+      const orders = await tx.productionOrder.findMany({
+        where: { companyId: cid },
+        select: { id: true, recipeSnapshot: true, materialSnapshot: true, actualMaterials: true, overheadItems: true, packaging: true },
+      });
+      for (const order of orders) {
+        const data: any = {};
+        for (const key of ["recipeSnapshot", "materialSnapshot", "actualMaterials", "overheadItems", "packaging"] as const) {
+          const value = order[key];
+          if (value !== null && value !== undefined) data[key] = this.convertEmbeddedMoney(value, factor);
+        }
+        if (Object.keys(data).length) await tx.productionOrder.update({ where: { id: order.id }, data });
+      }
+
+      await tx.company.update({ where: { id: cid }, data: { currency: nextCurrency } });
+      await this.writeAudit(tx, cid, actorUserId, "settings.currency_change", "company", cid, {
+        from: currentCurrency,
+        to: nextCurrency,
+        rate: factor,
+        provider: fx.provider,
+        effectiveAt: fx.effectiveAt,
+      });
+    }, { timeout: 60_000 });
+  }
+
   async getSettings(companyId: string, userId?: string) {
     const tenantId = this.requireCompany(companyId);
     const [companySettings, company] = await Promise.all([
@@ -2985,12 +3100,9 @@ async createCategory(companyId: string, body: any) {
     const scope = body.scope || "company";
     const settings = body.settings || body.value || body;
 
-    const requestedBaseCurrency = settings?.formats?.baseCurrency || settings?.baseCurrency;
+    const requestedBaseCurrency = settings?.formats?.baseCurrency || settings?.accountingCurrency;
     if (requestedBaseCurrency) {
-      await this.prisma.company.update({
-        where: { id: tenantId },
-        data: { currency: normalizeCurrency(requestedBaseCurrency) },
-      });
+      await this.changeCompanyCurrency(tenantId, requestedBaseCurrency, userId);
     }
 
     if (body.key === "inventory_policy" || settings?.inventoryPolicy || settings?.warehouse?.inventoryPolicy) {
@@ -3566,16 +3678,28 @@ async createCategory(companyId: string, body: any) {
     });
   }
 
-  private async generateNumber(tx: Tx | PrismaService, companyId: string, type: "sale" | "purchase" | "production") {
+  private async generateNumber(tx: Tx, companyId: string, type: "sale" | "purchase" | "production") {
     const year = new Date().getFullYear();
     const prefix = type === "sale" ? "SO" : type === "purchase" ? "PO" : "MO";
-    const count =
-      type === "sale"
-        ? await tx.sale.count({ where: { companyId } })
-        : type === "purchase"
-          ? await tx.purchase.count({ where: { companyId } })
-          : await tx.productionOrder.count({ where: { companyId } });
-    return `${prefix}-${year}-${String(count + 1).padStart(5, "0")}`;
+    const numberPrefix = `${prefix}-${year}-`;
+
+    // Serialize document-number allocation per company/type/year inside the
+    // surrounding DB transaction. This prevents two concurrent users from
+    // receiving the same PO/SO/MO number.
+    await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${`${companyId}:${type}:${year}`}))`);
+
+    const rows = type === "sale"
+      ? await tx.sale.findMany({ where: { companyId, number: { startsWith: numberPrefix } }, select: { number: true } })
+      : type === "purchase"
+        ? await tx.purchase.findMany({ where: { companyId, number: { startsWith: numberPrefix } }, select: { number: true } })
+        : await tx.productionOrder.findMany({ where: { companyId, number: { startsWith: numberPrefix } }, select: { number: true } });
+
+    const maxSequence = rows.reduce((max, row) => {
+      const sequence = Number(String(row.number || "").slice(numberPrefix.length));
+      return Number.isInteger(sequence) && sequence > max ? sequence : max;
+    }, 0);
+
+    return `${numberPrefix}${String(maxSequence + 1).padStart(5, "0")}`;
   }
 
   private normalizePurchaseItems(items: any[], productMap = new Map<string, any>()) {
@@ -3586,7 +3710,11 @@ async createCategory(companyId: string, body: any) {
       const purchaseUnit = normalizeUnit(item.purchaseUnit || item.unit || product?.unit);
       const unit = product?.unit ? normalizeUnit(product.unit) : purchaseUnit;
       const quantity = roundQuantity(convertQuantity(purchaseQuantity, purchaseUnit, unit));
-      const lineTotal = roundMoney(item.lineTotal ?? item.total ?? item.subtotal ?? item.purchasePrice ?? item.cost ?? item.price);
+      const explicitLineTotal = item.lineTotal ?? item.total ?? item.subtotal;
+      const purchaseUnitPrice = roundMoney(item.unitPrice ?? item.purchasePrice ?? item.price ?? item.cost);
+      const lineTotal = explicitLineTotal === undefined || explicitLineTotal === null
+        ? roundMoney(purchaseQuantity * purchaseUnitPrice)
+        : roundMoney(explicitLineTotal);
       const cost = quantity > 0 ? roundMoney(lineTotal / quantity, 6) : 0;
       if (quantity <= 0) throw new BadRequestException({ code: "INVALID_QUANTITY", message: "Miqdor 0 dan katta bo'lsin." });
       if (lineTotal < 0) throw new BadRequestException({ code: "INVALID_PURCHASE_PRICE", message: "Xarid narxi manfiy bo'lmasin." });
@@ -3731,7 +3859,7 @@ async createCategory(companyId: string, body: any) {
         sku: item.sku,
         barcode: item.barcode,
         quantity,
-        unit: item.unit || "dona",
+        unit: item.unit || "",
         price,
         cost: roundMoney(item.cost),
         subtotal: roundMoney(quantity * price),
@@ -3914,7 +4042,7 @@ async createCategory(companyId: string, body: any) {
       type: stock.product?.type,
       category: stock.product?.categoryRef?.name || stock.product?.category || null,
       image: stock.product?.image || "",
-      unit: stock.product?.unit || "dona",
+      unit: stock.product?.unit || "",
       quantity: decimalToNumber(stock.quantity),
       reserved: decimalToNumber(stock.reserved),
       cost: decimalToNumber(stock.cost),
@@ -3981,11 +4109,25 @@ async createCategory(companyId: string, body: any) {
           quantity,
           purchaseQuantity: item?.purchaseQuantity === null || item?.purchaseQuantity === undefined ? null : decimalToNumber(item.purchaseQuantity),
           receivedQuantity: decimalToNumber(item?.receivedQuantity),
-          unit: item?.unit || item?.product?.unit || "dona",
-          purchaseUnit: item?.purchaseUnit || item?.unit || item?.product?.unit || "dona",
+          unit: item?.unit || item?.product?.unit || "",
+          purchaseUnit: item?.purchaseUnit || item?.unit || item?.product?.unit || "",
           cost,
           salePrice: item?.salePrice === null || item?.salePrice === undefined ? null : decimalToNumber(item.salePrice),
           subtotal: item?.subtotal === null || item?.subtotal === undefined ? roundMoney(quantity * cost) : decimalToNumber(item.subtotal),
+          unitPrice:
+            decimalToNumber(item?.purchaseQuantity) > 0
+              ? roundMoney(
+                  (item?.subtotal === null || item?.subtotal === undefined ? roundMoney(quantity * cost) : decimalToNumber(item.subtotal)) / decimalToNumber(item.purchaseQuantity),
+                  6,
+                )
+              : 0,
+          purchasePrice:
+            decimalToNumber(item?.purchaseQuantity) > 0
+              ? roundMoney(
+                  (item?.subtotal === null || item?.subtotal === undefined ? roundMoney(quantity * cost) : decimalToNumber(item.subtotal)) / decimalToNumber(item.purchaseQuantity),
+                  6,
+                )
+              : 0,
         };
       })
       : [];

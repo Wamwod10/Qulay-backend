@@ -18,9 +18,11 @@ import {
   SuppliersController,
   WarehousesController,
 } from "./business.controller";
+import { FxModule } from "../fx/fx.module";
 import { BusinessService } from "./business.service";
 
 @Module({
+  imports: [FxModule],
   controllers: [
     ContextController,
     ProductsController,

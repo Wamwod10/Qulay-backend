@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 
 import { normalizeCurrency, SUPPORTED_CURRENCIES, SupportedCurrency } from "../../common/utils/currency.util";
 import { roundMoney, toNumber } from "../../common/utils/money.util";
+import { PrismaService } from "../../database/prisma.service";
 
 type FxRateRecord = {
   fromCurrency: SupportedCurrency;
@@ -36,7 +37,10 @@ export class FxService {
   private readonly lastKnownRates = new Map<SupportedCurrency, CachedProviderRates>();
   private readonly inFlightRefreshes = new Map<SupportedCurrency, Promise<CachedProviderRates>>();
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {
     this.ttlMs = Math.max(Number(this.config.get("FX_RATE_TTL_MINUTES") || 45), 1) * 60 * 1000;
     this.provider = String(this.config.get("FX_PROVIDER") || "exchangerate-api").trim().toLowerCase();
     this.apiKey = String(this.config.get("FX_API_KEY") || "").trim();
@@ -152,6 +156,18 @@ export class FxService {
       return cached;
     }
 
+    // Restore the last successful table from PostgreSQL. This makes FX
+    // resilient to Render/process restarts and lets the UI keep converting
+    // during a short provider outage.
+    const persisted = await this.loadPersistedRates(baseCurrency);
+    if (persisted) {
+      this.lastKnownRates.set(baseCurrency, persisted);
+      if (Date.now() < Date.parse(persisted.expiresAt)) {
+        this.currentRates.set(baseCurrency, persisted);
+        return persisted;
+      }
+    }
+
     const lastKnown = this.lastKnownRates.get(baseCurrency);
 
     try {
@@ -172,9 +188,10 @@ export class FxService {
     }
 
     const promise = this.fetchProviderRates(baseCurrency)
-      .then((rates) => {
+      .then(async (rates) => {
         this.currentRates.set(baseCurrency, rates);
         this.lastKnownRates.set(baseCurrency, rates);
+        await this.persistRates(rates).catch(() => undefined);
         return rates;
       })
       .finally(() => {
@@ -193,6 +210,45 @@ export class FxService {
       ...payload,
       expiresAt: new Date(Date.now() + this.ttlMs).toISOString(),
     };
+  }
+
+  private async loadPersistedRates(baseCurrency: SupportedCurrency): Promise<CachedProviderRates | null> {
+    try {
+      const row = await this.prisma.fxRateCache.findUnique({ where: { baseCurrency } });
+      if (!row || !row.rates || typeof row.rates !== "object") return null;
+      return {
+        baseCurrency,
+        rates: row.rates as Record<string, number>,
+        provider: row.provider,
+        fetchedAt: row.fetchedAt.toISOString(),
+        effectiveAt: row.effectiveAt || null,
+        expiresAt: row.expiresAt.toISOString(),
+      };
+    } catch {
+      // The table may not exist until the additive migration is deployed.
+      return null;
+    }
+  }
+
+  private async persistRates(rates: CachedProviderRates) {
+    await this.prisma.fxRateCache.upsert({
+      where: { baseCurrency: rates.baseCurrency },
+      update: {
+        rates: rates.rates,
+        provider: rates.provider,
+        fetchedAt: new Date(rates.fetchedAt),
+        effectiveAt: rates.effectiveAt,
+        expiresAt: new Date(rates.expiresAt),
+      },
+      create: {
+        baseCurrency: rates.baseCurrency,
+        rates: rates.rates,
+        provider: rates.provider,
+        fetchedAt: new Date(rates.fetchedAt),
+        effectiveAt: rates.effectiveAt,
+        expiresAt: new Date(rates.expiresAt),
+      },
+    });
   }
 
   private providerUrl(baseCurrency: SupportedCurrency) {
