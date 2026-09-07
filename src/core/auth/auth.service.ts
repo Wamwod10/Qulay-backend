@@ -68,7 +68,7 @@ export class AuthService {
           phone,
           email,
           country: dto.country?.trim() || "Uzbekistan",
-          currency: dto.currency || "UZS",
+          currency: normalizeCurrency(dto.currency || "TJS"),
           ownerUserId: user.id,
         },
       });
@@ -369,7 +369,7 @@ export class AuthService {
           businessName: "Universal Platform",
           name: "Universal Platform",
           status: "ACTIVE",
-          currency: "UZS",
+          currency: "TJS",
         };
 
     return {

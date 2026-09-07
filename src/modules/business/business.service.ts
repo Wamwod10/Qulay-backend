@@ -1041,7 +1041,7 @@ async createCategory(companyId: string, body: any) {
     if (body.warehouseId && !warehouse) throw new NotFoundException({ code: "WAREHOUSE_NOT_FOUND", message: "Ombor topilmadi." });
     if (paidAmount > total) throw new BadRequestException({ code: "OVERPAYMENT", message: "To'lov jami summadan oshmasin." });
     const company = await this.prisma.company.findUnique({ where: { id: tenantId }, select: { currency: true } });
-    const currency = normalizeCurrency(body.currency || company?.currency || "UZS");
+    const currency = normalizeCurrency(body.currency || company?.currency || "TJS");
     const purchase = await this.prisma.$transaction(async (tx) => {
       const created = await tx.purchase.create({
         data: {
@@ -1143,7 +1143,7 @@ async createCategory(companyId: string, body: any) {
         throw new ConflictException({ code: "PURCHASE_RECEIVE_BLOCKED", message: "Bu xaridni qabul qilib bo'lmaydi." });
       }
 
-      const currency = normalizeCurrency(body.currency || purchase.currency || "UZS");
+      const currency = normalizeCurrency(body.currency || purchase.currency || "TJS");
       const receivedItems = Array.isArray(body.receivedItems)
         ? body.receivedItems
         : purchase.items.map((item) => ({
@@ -2042,7 +2042,7 @@ async createCategory(companyId: string, body: any) {
           recipeSnapshot,
           materialSnapshot,
           packaging: Array.isArray(body.packaging) ? body.packaging : [],
-          currency: normalizeCurrency(body.currency ?? company?.currency ?? "UZS"),
+          currency: normalizeCurrency(body.currency ?? company?.currency ?? "TJS"),
           status: "PLANNED",
           note: body.note,
           plannedDate: parseOptionalDate(body.plannedDate),
@@ -3015,7 +3015,7 @@ async createCategory(companyId: string, body: any) {
       where: { id: tenantId },
       select: { currency: true },
     });
-    const currentCurrency = normalizeCurrency(company?.currency || "UZS");
+    const currentCurrency = normalizeCurrency(company?.currency || "TJS");
     if (currentCurrency === nextCurrency) return;
 
     const fx = await this.fx.getRate(currentCurrency, nextCurrency).catch(() => null);
@@ -3090,7 +3090,7 @@ async createCategory(companyId: string, body: any) {
     const userSettings = userId ? await this.prisma.userSetting.findMany({ where: { userId, companyId: tenantId } }) : [];
 
     return {
-      company: { ...Object.fromEntries(companySettings.map((item) => [item.key, item.value])), inventoryPolicy: company?.inventoryPolicy || "FEFO", currency: company?.currency || "UZS" },
+      company: { ...Object.fromEntries(companySettings.map((item) => [item.key, item.value])), inventoryPolicy: company?.inventoryPolicy || "FEFO", currency: company?.currency || "TJS" },
       user: Object.fromEntries(userSettings.map((item) => [item.key, item.value])),
     };
   }
@@ -3579,7 +3579,7 @@ async createCategory(companyId: string, body: any) {
     const existing = await tx.cashbox.findFirst({ where: { companyId, status: "ACTIVE" }, orderBy: { createdAt: "asc" } });
     if (existing) return existing;
     const company = await tx.company.findUnique({ where: { id: companyId }, select: { currency: true } });
-    return tx.cashbox.create({ data: { companyId, name: "Asosiy kassa", currency: normalizeCurrency(company?.currency || "UZS") } });
+    return tx.cashbox.create({ data: { companyId, name: "Asosiy kassa", currency: normalizeCurrency(company?.currency || "TJS") } });
   }
 
   private async createFinanceTx(tx: Tx, companyId: string, input: any) {
@@ -4228,7 +4228,7 @@ async createCategory(companyId: string, body: any) {
     }
   }
 
-  private safeNormalizeCurrency(value: unknown, fallback = "UZS") {
+  private safeNormalizeCurrency(value: unknown, fallback = "TJS") {
     try {
       return normalizeCurrency(value || fallback);
     } catch {

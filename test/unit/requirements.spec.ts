@@ -215,9 +215,10 @@ test("35 unit changes with stock or history are blocked", () => {
   assert.match(backend("modules/business/business.service.ts"), /UNIT_CHANGE_BLOCKED/);
 });
 
-test("36 supported company currencies are extensible and validated", () => {
-  assert.deepEqual(SUPPORTED_CURRENCIES, ["UZS", "TJS", "USD", "EUR", "RUB", "KZT", "KGS"]);
+test("36 the platform only accepts Tajikistan somoni", () => {
+  assert.deepEqual(SUPPORTED_CURRENCIES, ["TJS"]);
   assert.equal(normalizeCurrency("tjs"), "TJS");
+  assert.throws(() => normalizeCurrency("UZS"));
 });
 
 test("37 TJS supports sub-unit decimal values", () => {

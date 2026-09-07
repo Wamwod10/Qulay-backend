@@ -8,7 +8,7 @@ export class FxController {
 
   @Get("rates")
   rates(@Query("base") base: string, @Query("symbols") symbols: string) {
-    return this.fx.getRates(base || "UZS", symbols);
+    return this.fx.getRates(base || "TJS", symbols);
   }
 
   @Get("convert")
@@ -19,8 +19,8 @@ export class FxController {
   ) {
     return this.fx.convertMoney({
       amount,
-      fromCurrency: fromCurrency || "UZS",
-      toCurrency: toCurrency || "UZS",
+      fromCurrency: fromCurrency || "TJS",
+      toCurrency: toCurrency || "TJS",
     });
   }
 }

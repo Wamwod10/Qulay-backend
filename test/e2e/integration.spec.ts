@@ -94,7 +94,7 @@ async function createFixture(prefix: string, role: "OWNER" | "SUPER_ADMIN" = "OW
       email: user.email,
       phone: user.phone,
       ownerUserId: user.id,
-      currency: "UZS",
+      currency: "TJS",
     },
   });
   await prisma.companyMember.create({ data: { userId: user.id, companyId: company.id, role: "OWNER" } });
@@ -105,7 +105,7 @@ async function createFixture(prefix: string, role: "OWNER" | "SUPER_ADMIN" = "OW
   })));
   await prisma.companyModuleAccess.createMany({ data: modules.map((module) => ({ companyId: company.id, moduleId: module.id, enabled: true })) });
   const warehouse = await prisma.warehouse.create({ data: { companyId: company.id, name: "Main Warehouse", code: `MAIN-${fixtureCounter}` } });
-  await prisma.cashbox.create({ data: { companyId: company.id, name: "Main Cashbox", currency: "UZS" } });
+  await prisma.cashbox.create({ data: { companyId: company.id, name: "Main Cashbox", currency: "TJS" } });
   await prisma.branch.create({ data: { companyId: company.id, name: "Main Branch" } });
 
   return { user, company, warehouse, password };
