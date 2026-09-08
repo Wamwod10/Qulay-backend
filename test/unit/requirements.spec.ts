@@ -215,7 +215,7 @@ test("35 unit changes with stock or history are blocked", () => {
   assert.match(backend("modules/business/business.service.ts"), /UNIT_CHANGE_BLOCKED/);
 });
 
-test("36 the platform only accepts Tajikistan somoni", () => {
+test("36 the platform only accepts Tajikistan somon", () => {
   assert.deepEqual(SUPPORTED_CURRENCIES, ["TJS"]);
   assert.equal(normalizeCurrency("tjs"), "TJS");
   assert.throws(() => normalizeCurrency("UZS"));
